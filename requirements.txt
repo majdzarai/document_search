@@ -1,0 +1,63 @@
+# =============================================================================
+# RAG Service Dependencies
+# =============================================================================
+# This file lists all Python packages required to run the RAG Service.
+#
+# Install with: pip install -r requirements.txt
+#
+# Version pinning strategy:
+# - We use >= for minimum versions to ensure compatibility
+# - Major version is pinned to avoid breaking changes
+# - Update versions regularly and test before deploying
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Core Web Framework
+# -----------------------------------------------------------------------------
+# FastAPI: Modern, fast web framework for building APIs
+# - Automatic OpenAPI documentation
+# - Built-in request validation with Pydantic
+# - Async support for high performance
+fastapi>=0.109.0,<1.0.0
+
+# Uvicorn: Lightning-fast ASGI server
+# - Runs FastAPI applications
+# - Supports hot reload for development
+# - Production-ready with gunicorn
+uvicorn[standard]>=0.27.0,<1.0.0
+
+# -----------------------------------------------------------------------------
+# Data Validation
+# -----------------------------------------------------------------------------
+# Pydantic: Data validation using Python type hints
+# - Validates request/response data automatically
+# - Generates JSON schemas for documentation
+# - Fast validation with compiled validators
+pydantic>=2.5.0,<3.0.0
+
+# -----------------------------------------------------------------------------
+# Future Dependencies (commented out for Step 1)
+# -----------------------------------------------------------------------------
+# These will be added in later steps as we implement real functionality:
+
+# Vector Stores
+qdrant-client>=1.7.0  # STEP 3: Uncommented for Qdrant vector store
+# pinecone-client>=3.0.0
+# weaviate-client>=4.0.0
+
+# Embeddings
+# openai>=1.10.0
+# cohere>=4.40.0
+# sentence-transformers>=2.2.0
+
+# LLM Providers
+# anthropic>=0.18.0
+
+# Document Processing (STEP 5)
+pypdf>=3.17.0           # PDF file loading
+python-docx>=1.1.0      # DOCX file loading
+python-multipart>=0.0.6 # File uploads in FastAPI
+
+# Observability
+# opentelemetry-api>=1.22.0
+# prometheus-client>=0.19.0
