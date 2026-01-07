@@ -86,11 +86,13 @@ import threading
 from src.embeddings.base import EmbeddingProvider
 from src.vectorstore.base import VectorStoreProvider
 from src.llm.base import LLMProvider
+from src.reranker.base import RerankerProvider
 
 # Import factories for creating providers
 from src.embeddings.factory import create_embedding_provider
 from src.vectorstore.factory import create_vector_store_provider
 from src.llm.factory import create_llm_provider
+from src.reranker.factory import create_reranker_provider
 
 
 # =============================================================================
@@ -102,6 +104,7 @@ from src.llm.factory import create_llm_provider
 _embedding_provider: Optional[EmbeddingProvider] = None
 _vector_store: Optional[VectorStoreProvider] = None
 _llm_provider: Optional[LLMProvider] = None
+_reranker: Optional[RerankerProvider] = None
 
 # Thread lock for thread-safe initialization
 # This prevents race conditions if multiple threads try to initialize at once
@@ -111,6 +114,7 @@ _lock = threading.Lock()
 _embedding_initialized = False
 _vector_store_initialized = False
 _llm_initialized = False
+_reranker_initialized = False
 
 
 # =============================================================================
@@ -263,6 +267,74 @@ def get_llm_provider() -> Optional[LLMProvider]:
     return _llm_provider
 
 
+def get_reranker() -> Optional[RerankerProvider]:
+    """
+    Get the shared reranker provider instance.
+
+    This function returns the SAME reranker provider instance every time
+    it's called. The reranker is only initialized if ENABLE_RERANKING=true.
+
+    WHAT IS RERANKING? (STEP 6)
+    ---------------------------
+    Reranking is a second-stage retrieval process that improves result quality:
+    1. Vector search quickly retrieves candidate documents
+    2. Reranker carefully scores each candidate's relevance
+    3. Only the highest-scoring documents reach the LLM
+
+    WHY A SHARED INSTANCE?
+    ----------------------
+    - Rerankers may cache model weights or connections
+    - Creating multiple instances wastes resources
+    - Ensures consistent reranking across the application
+
+    WHEN IS RERANKING USED?
+    -----------------------
+    Reranking only happens when ALL of these are true:
+    1. ENABLE_RERANKING=true in environment
+    2. This function returns a valid reranker (not None)
+    3. The pipeline has documents to rerank
+
+    If ENABLE_RERANKING=false (default), this function returns None
+    and no reranking overhead is incurred.
+
+    Returns:
+        The shared RerankerProvider instance, or None if:
+        - ENABLE_RERANKING is false (default behavior)
+        - Initialization fails
+
+    Example:
+        from src.core.providers import get_reranker
+
+        reranker = get_reranker()
+        if reranker:
+            reranked_docs = reranker.rerank(query, documents, top_k=5)
+    """
+    global _reranker, _reranker_initialized
+
+    # Import settings here to check if reranking is enabled
+    from src.core.config import settings
+
+    # Double-checked locking pattern for thread safety
+    if not _reranker_initialized:
+        with _lock:
+            if not _reranker_initialized:
+                # Only initialize if reranking is enabled
+                if not settings.enable_reranking:
+                    print("[Providers] Reranking is DISABLED (ENABLE_RERANKING=false)")
+                    print("[Providers] To enable: set ENABLE_RERANKING=true")
+                    _reranker = None
+                else:
+                    try:
+                        _reranker = create_reranker_provider()
+                        print(f"[Providers] Shared reranker initialized: {_reranker.get_provider_name()}")
+                    except Exception as e:
+                        print(f"[Providers] WARNING: Could not initialize reranker: {e}")
+                        _reranker = None
+                _reranker_initialized = True
+
+    return _reranker
+
+
 # =============================================================================
 # INITIALIZATION FUNCTION
 # =============================================================================
@@ -285,7 +357,8 @@ def initialize_providers() -> dict:
         {
             "embedding_provider": True/False,
             "vector_store": True/False,
-            "llm_provider": True/False
+            "llm_provider": True/False,
+            "reranker": True/False/None  # None if reranking disabled
         }
 
     Example:
@@ -295,6 +368,9 @@ def initialize_providers() -> dict:
         status = initialize_providers()
         print(f"Vector store ready: {status['vector_store']}")
     """
+    # Import settings to check reranking config
+    from src.core.config import settings
+
     print("\n" + "=" * 60)
     print("INITIALIZING SHARED PROVIDERS")
     print("=" * 60)
@@ -303,11 +379,14 @@ def initialize_providers() -> dict:
     embedding = get_embedding_provider()
     vector_store = get_vector_store()
     llm = get_llm_provider()
+    reranker = get_reranker()  # Only initializes if ENABLE_RERANKING=true
 
     status = {
         "embedding_provider": embedding is not None,
         "vector_store": vector_store is not None,
-        "llm_provider": llm is not None
+        "llm_provider": llm is not None,
+        # Reranker: True if initialized, False if failed, None if disabled
+        "reranker": reranker is not None if settings.enable_reranking else None
     }
 
     print("\n" + "-" * 40)
@@ -315,6 +394,11 @@ def initialize_providers() -> dict:
     print(f"  Embedding Provider: {'OK' if status['embedding_provider'] else 'FAILED'}")
     print(f"  Vector Store:       {'OK' if status['vector_store'] else 'FAILED'}")
     print(f"  LLM Provider:       {'OK' if status['llm_provider'] else 'FAILED'}")
+    # Reranker status depends on whether it's enabled
+    if status['reranker'] is None:
+        print(f"  Reranker:           DISABLED (set ENABLE_RERANKING=true to enable)")
+    else:
+        print(f"  Reranker:           {'OK' if status['reranker'] else 'FAILED'}")
     print("-" * 40)
     print("=" * 60 + "\n")
 
@@ -351,15 +435,17 @@ def reset_providers() -> None:
         # Now get_vector_store() will create a fresh instance
         store = get_vector_store()
     """
-    global _embedding_provider, _vector_store, _llm_provider
-    global _embedding_initialized, _vector_store_initialized, _llm_initialized
+    global _embedding_provider, _vector_store, _llm_provider, _reranker
+    global _embedding_initialized, _vector_store_initialized, _llm_initialized, _reranker_initialized
 
     with _lock:
         _embedding_provider = None
         _vector_store = None
         _llm_provider = None
+        _reranker = None
         _embedding_initialized = False
         _vector_store_initialized = False
         _llm_initialized = False
+        _reranker_initialized = False
 
     print("[Providers] All providers reset to uninitialized state")

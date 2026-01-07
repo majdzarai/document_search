@@ -1,11 +1,18 @@
 """
-HTML File Loader
-=================
+HTML File Loader (Enhanced)
+============================
 
 WHAT IS THIS LOADER?
 --------------------
 This loader handles HTML (HyperText Markup Language) files.
 HTML is the standard markup language for web pages.
+
+ENHANCEMENTS IN THIS VERSION:
+-----------------------------
+1. TEXT NORMALIZATION: Cleans extracted text for better quality
+2. IMPROVED PARSING: Better handling of nested tags
+3. SCRIPT/STYLE REMOVAL: Removes code that's not content
+4. PARAGRAPH PRESERVATION: Maintains document structure
 
 HTML FILE STRUCTURE:
 --------------------
@@ -21,6 +28,7 @@ WHAT DO WE NEED TO DO?
 2. Remove script and style tags (they contain code, not content)
 3. Extract just the text content
 4. Clean up whitespace
+5. Normalize for RAG quality
 
 WHAT LIBRARY DO WE USE?
 -----------------------
@@ -30,30 +38,19 @@ and implement a simple tag stripper. For production use, consider:
 - lxml (fastest)
 
 We keep it simple here to avoid extra dependencies.
-
-EXAMPLE:
---------
-Input HTML:
-    <html>
-        <head><title>My Page</title></head>
-        <body>
-            <h1>Hello World</h1>
-            <p>This is content.</p>
-        </body>
-    </html>
-
-Output Text:
-    My Page
-    Hello World
-    This is content.
 """
 
 import os
 import re
 from html.parser import HTMLParser
-from typing import List
+from typing import List, Optional
 
 from src.ingestion.document_loader.base import DocumentLoader, LoadedDocument
+from src.ingestion.text_utils import (
+    TextNormalizer,
+    NormalizationConfig,
+    normalize_text
+)
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -64,6 +61,7 @@ class HTMLTextExtractor(HTMLParser):
     - Ignores script and style tags
     - Collects text from all other tags
     - Handles HTML entities (like &amp;)
+    - Preserves paragraph boundaries
 
     WHAT IS HTMLParser?
     -------------------
@@ -81,18 +79,41 @@ class HTMLTextExtractor(HTMLParser):
         # List to collect text pieces
         self.text_parts: List[str] = []
         # Tags to ignore (their content is not human-readable)
-        self.ignore_tags = {"script", "style", "head", "meta", "link"}
+        self.ignore_tags = {"script", "style", "head", "meta", "link", "noscript"}
+        # Block-level tags that indicate paragraph boundaries
+        self.block_tags = {
+            "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+            "li", "tr", "td", "th", "article", "section",
+            "header", "footer", "nav", "aside", "blockquote",
+            "pre", "br", "hr"
+        }
         # Stack to track current tags
         self.tag_stack: List[str] = []
+        # Track if we just ended a block tag (for paragraph breaks)
+        self.just_ended_block = False
 
     def handle_starttag(self, tag: str, attrs):
         """Called when we encounter an opening tag like <p>."""
-        self.tag_stack.append(tag.lower())
+        tag_lower = tag.lower()
+        self.tag_stack.append(tag_lower)
+
+        # Add paragraph break before block-level elements
+        if tag_lower in self.block_tags:
+            self.text_parts.append("\n\n")
 
     def handle_endtag(self, tag: str):
         """Called when we encounter a closing tag like </p>."""
-        if self.tag_stack and self.tag_stack[-1] == tag.lower():
+        tag_lower = tag.lower()
+
+        if self.tag_stack and self.tag_stack[-1] == tag_lower:
             self.tag_stack.pop()
+
+        # Add paragraph break after block-level elements
+        if tag_lower in self.block_tags:
+            self.text_parts.append("\n\n")
+            self.just_ended_block = True
+        else:
+            self.just_ended_block = False
 
     def handle_data(self, data: str):
         """
@@ -104,19 +125,25 @@ class HTMLTextExtractor(HTMLParser):
         if any(tag in self.ignore_tags for tag in self.tag_stack):
             return
 
-        # Clean up the text (remove excessive whitespace)
+        # Clean up the text (but preserve some structure)
         text = data.strip()
         if text:
+            # Add space before if not just after a block tag
+            if self.text_parts and not self.just_ended_block:
+                # Check if last part ends with whitespace
+                if self.text_parts[-1] and not self.text_parts[-1].endswith((' ', '\n')):
+                    self.text_parts.append(" ")
             self.text_parts.append(text)
+            self.just_ended_block = False
 
     def get_text(self) -> str:
-        """Return all collected text, joined with spaces."""
-        return " ".join(self.text_parts)
+        """Return all collected text, with paragraph structure."""
+        return "".join(self.text_parts)
 
 
 class HTMLLoader(DocumentLoader):
     """
-    Document loader for HTML files.
+    Document loader for HTML files with text normalization.
 
     This loader extracts readable text content from HTML files,
     removing scripts, styles, and other non-content elements.
@@ -124,6 +151,12 @@ class HTMLLoader(DocumentLoader):
     Supported formats:
     - .html
     - .htm
+
+    Features:
+    - Script/style removal
+    - Text normalization (whitespace, control chars)
+    - Paragraph boundary preservation
+    - Title extraction
 
     Example:
         loader = HTMLLoader()
@@ -134,14 +167,37 @@ class HTMLLoader(DocumentLoader):
     # Encodings to try when reading HTML files
     ENCODINGS_TO_TRY = ["utf-8", "utf-8-sig", "latin-1", "cp1252"]
 
+    def __init__(self, normalize: bool = True):
+        """
+        Initialize the HTML loader.
+
+        Args:
+            normalize: Whether to normalize extracted text (default: True).
+                      Normalization removes control characters, normalizes
+                      whitespace, and preserves paragraph boundaries.
+
+        Example:
+            # With normalization (default)
+            loader = HTMLLoader()
+
+            # Without normalization
+            loader = HTMLLoader(normalize=False)
+        """
+        self.normalize = normalize
+        self.normalizer = TextNormalizer(NormalizationConfig(
+            remove_control_chars=True,
+            normalize_whitespace=True,
+            normalize_newlines=True,
+            remove_page_markers=False,
+            detect_headers_footers=False,  # HTML pages rarely have repeated headers
+            fix_ocr_artifacts=False,
+            preserve_paragraphs=True,
+            strip_lines=True
+        ))
+
     @property
     def supported_extensions(self) -> List[str]:
-        """
-        Return supported file extensions.
-
-        Returns:
-            List containing HTML extensions.
-        """
+        """Return supported file extensions."""
         return [".html", ".htm", ".HTML", ".HTM"]
 
     def load(self, file_path: str) -> LoadedDocument:
@@ -151,7 +207,7 @@ class HTMLLoader(DocumentLoader):
         This method:
         1. Reads the HTML file
         2. Parses it to extract text
-        3. Cleans up the text
+        3. Normalizes the text (if enabled)
         4. Returns text with metadata
 
         Args:
@@ -195,7 +251,7 @@ class HTMLLoader(DocumentLoader):
                 continue
 
         if html_content is None:
-            raise ValueError(f"Could not decode HTML file with any supported encoding")
+            raise ValueError("Could not decode HTML file with any supported encoding")
 
         print(f"[HTMLLoader] Read with encoding: {used_encoding}")
 
@@ -203,9 +259,15 @@ class HTMLLoader(DocumentLoader):
         # Step 4: Extract title (if present)
         # =====================================================================
         title = ""
-        title_match = re.search(r"<title[^>]*>(.*?)</title>", html_content, re.IGNORECASE | re.DOTALL)
+        title_match = re.search(
+            r"<title[^>]*>(.*?)</title>",
+            html_content,
+            re.IGNORECASE | re.DOTALL
+        )
         if title_match:
             title = title_match.group(1).strip()
+            # Clean the title of any HTML entities
+            title = self._decode_html_entities(title)
             print(f"[HTMLLoader] Found title: {title}")
 
         # =====================================================================
@@ -219,11 +281,13 @@ class HTMLLoader(DocumentLoader):
             raise ValueError(f"Error parsing HTML: {e}")
 
         # =====================================================================
-        # Step 6: Clean up the text
+        # Step 6: Normalize the text
         # =====================================================================
-        # Remove excessive whitespace
-        text = re.sub(r"\s+", " ", text)
-        text = text.strip()
+        original_char_count = len(text)
+
+        if self.normalize:
+            text = self.normalizer.normalize(text)
+            print(f"[HTMLLoader] Normalized text ({original_char_count} → {len(text)} chars)")
 
         print(f"[HTMLLoader] Extracted {len(text)} characters")
 
@@ -237,10 +301,25 @@ class HTMLLoader(DocumentLoader):
             "file_size_bytes": file_size,
             "encoding": used_encoding,
             "title": title,
-            "char_count": len(text)
+            "char_count": len(text),
+            "original_char_count": original_char_count,
+            "normalized": self.normalize
         }
 
         # =====================================================================
         # Step 8: Return the loaded document
         # =====================================================================
         return LoadedDocument(text=text, metadata=metadata)
+
+    def _decode_html_entities(self, text: str) -> str:
+        """
+        Decode common HTML entities in text.
+
+        Args:
+            text: Text with potential HTML entities.
+
+        Returns:
+            Text with entities decoded.
+        """
+        import html
+        return html.unescape(text)

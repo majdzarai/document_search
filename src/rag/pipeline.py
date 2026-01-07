@@ -89,6 +89,54 @@ from src.vectorstore.base import VectorStoreProvider
 from src.llm.base import LLMProvider
 
 # =============================================================================
+# STEP 6: Import the Reranker layer
+# =============================================================================
+# The reranker is an OPTIONAL second-stage retrieval component.
+# It takes documents retrieved by vector search and re-scores them
+# to find the most relevant ones before sending to the LLM.
+#
+# WHY RERANKING?
+# --------------
+# Vector search is fast but not always precise. Reranking:
+# 1. Gets a larger candidate set from vector search (e.g., 20 docs)
+# 2. Carefully scores each candidate's relevance to the query
+# 3. Returns only the best documents (e.g., top 5) to the LLM
+#
+# This two-stage approach gives us:
+# - SPEED: Vector search quickly narrows down candidates
+# - PRECISION: Reranking ensures only the best documents reach the LLM
+#
+# BACKWARD COMPATIBILITY:
+# -----------------------
+# Reranking is DISABLED by default. Set ENABLE_RERANKING=true to enable.
+# When disabled, the pipeline works exactly as before (pure vector search).
+
+from src.reranker.base import RerankerProvider
+
+# =============================================================================
+# STEP 7: Import the Evaluation layer (OPTIONAL)
+# =============================================================================
+# The evaluator measures RAG quality without affecting the response.
+# It computes metrics like:
+# - Retrieval: Precision@K, Recall@K, MRR
+# - Generation: Faithfulness, Context Coverage, Hallucination Risk
+#
+# IMPORTANT - BACKWARD COMPATIBILITY:
+# -----------------------------------
+# Evaluation is DISABLED by default (ENABLE_EVALUATION=false).
+# When disabled:
+# - No evaluation overhead
+# - Response format unchanged
+# - Behavior identical to before Step 7
+#
+# When enabled (ENABLE_EVALUATION=true):
+# - Metrics computed after response generation
+# - Results optionally included in response
+# - Does NOT affect the answer or sources
+
+from src.evaluation.evaluator import get_evaluator, RAGEvaluator
+
+# =============================================================================
 # SHARED PROVIDERS - CRITICAL FOR CORRECT RAG OPERATION
 # =============================================================================
 # We use shared provider instances to ensure that:
@@ -108,7 +156,8 @@ from src.llm.base import LLMProvider
 from src.core.providers import (
     get_embedding_provider,
     get_vector_store,
-    get_llm_provider
+    get_llm_provider,
+    get_reranker
 )
 
 # Import settings to check if demo seeding is enabled
@@ -123,29 +172,49 @@ class RAGPipeline:
     1. Receiving a user's question
     2. Converting the question to an embedding vector (STEP 2)
     3. Searching vector store for similar documents (STEP 3)
-    4. Generating an answer using the LLM (STEP 4 - NEW!)
-    5. Returning the answer with source citations
+    4. Generating an answer using the LLM (STEP 4)
+    5. OPTIONALLY reranking documents before generation (STEP 6 - NEW!)
+    6. Returning the answer with source citations
 
     DESIGN PATTERN: This class follows the "Facade" pattern.
     It provides a simple interface (the `run` method) that hides
     the complexity of the underlying RAG process.
 
-    STEP 4 ADDITIONS:
-    -----------------
-    - The pipeline now initializes an LLM provider (OpenRouter)
-    - Retrieved documents are passed to the LLM as context
-    - Real answer generation replaces mocked responses
-    - The LLM synthesizes information from multiple documents
+    STEP 6 ADDITIONS (RERANKING):
+    -----------------------------
+    The pipeline now supports an OPTIONAL reranking stage:
+    - When ENABLE_RERANKING=false (default): Works exactly as before
+    - When ENABLE_RERANKING=true: Adds a reranking step
 
-    THE RAG PROCESS (Step 4):
+    With reranking enabled:
+    1. Vector search retrieves RETRIEVAL_TOP_K candidates (e.g., 20)
+    2. Reranker scores each candidate's relevance to the query
+    3. Top FINAL_TOP_K documents (e.g., 5) are sent to the LLM
+
+    WHY RERANKING IMPROVES ACCURACY:
+    --------------------------------
+    Vector search (embedding similarity) is fast but imprecise.
+    A document can have similar embeddings without being truly relevant.
+    Reranking uses a more sophisticated model to assess relevance,
+    ensuring only the best documents reach the LLM.
+
+    THE RAG PROCESS (Step 6):
     -------------------------
-    1. Initialize: Embed and store example documents, initialize LLM
+    1. Initialize: Embed provider, vector store, LLM, (optional) reranker
     2. Question comes in: "What is RAG?"
     3. Embed question: Convert to vector [0.1, 0.2, ...]
     4. Search: Find similar vectors in Qdrant
-    5. Retrieve: Get top 3 documents with scores
-    6. Generate: Send documents + question to LLM (REAL!)
-    7. Return: Answer + source citations
+    5. Retrieve: Get top RETRIEVAL_TOP_K documents with scores
+    6. RERANK (optional): Re-score and filter to FINAL_TOP_K
+    7. Generate: Send documents + question to LLM
+    8. Return: Answer + source citations
+
+    BACKWARD COMPATIBILITY:
+    -----------------------
+    When ENABLE_RERANKING=false (the default):
+    - Pipeline fetches FINAL_TOP_K documents directly
+    - No reranking overhead
+    - Behavior identical to Step 4/5
 
     Example Usage:
         pipeline = RAGPipeline()
@@ -158,19 +227,20 @@ class RAGPipeline:
         self,
         embedding_provider: Optional[EmbeddingProvider] = None,
         vector_store_provider: Optional[VectorStoreProvider] = None,
-        llm_provider: Optional[LLMProvider] = None
+        llm_provider: Optional[LLMProvider] = None,
+        reranker_provider: Optional[RerankerProvider] = None
     ) -> None:
         """
         Initialize the RAG Pipeline.
 
         This constructor sets up all the components needed for the RAG process.
 
-        STEP 4 CHANGES:
+        STEP 6 CHANGES:
         ---------------
-        In Step 4, we add LLM initialization:
-        - Create the LLM provider (OpenRouter)
-        - Prepare for real answer generation
-        - No more mocked responses!
+        In Step 6, we add optional reranker initialization:
+        - Reranker is only initialized if ENABLE_RERANKING=true
+        - When enabled, improves retrieval precision
+        - When disabled (default), no overhead is added
 
         WHY ALLOW PASSING PROVIDERS?
         ----------------------------
@@ -188,6 +258,10 @@ class RAGPipeline:
 
             llm_provider: Optional. An LLMProvider instance to use.
                          If None, a provider is created from settings.
+
+            reranker_provider: Optional. A RerankerProvider instance to use.
+                              If None, uses shared provider (if ENABLE_RERANKING=true).
+                              Default behavior (ENABLE_RERANKING=false): no reranker.
 
         Example:
             # Default: creates providers from environment variables
@@ -209,7 +283,7 @@ class RAGPipeline:
             )
         """
         print("\n" + "=" * 60)
-        print("INITIALIZING RAG PIPELINE (Step 4)")
+        print("INITIALIZING RAG PIPELINE (Step 6)")
         print("=" * 60)
 
         # =====================================================================
@@ -311,6 +385,67 @@ class RAGPipeline:
                 print("[RAGPipeline] Running with mocked generation")
 
         # =====================================================================
+        # STEP 6: Initialize the Reranker (OPTIONAL, CONFIG-DRIVEN)
+        # =====================================================================
+        # The reranker is an OPTIONAL second-stage retrieval component.
+        #
+        # IMPORTANT - BACKWARD COMPATIBILITY:
+        # -----------------------------------
+        # - When ENABLE_RERANKING=false (default): No reranker is initialized
+        # - Pipeline works exactly as before (pure vector search)
+        # - No additional API calls or overhead
+        #
+        # When ENABLE_RERANKING=true:
+        # - Reranker is initialized from shared providers
+        # - Vector search retrieves RETRIEVAL_TOP_K candidates
+        # - Reranker filters to FINAL_TOP_K before LLM generation
+        # - Better precision but additional processing cost
+        #
+        # WHY CONFIG-DRIVEN?
+        # ------------------
+        # Not everyone needs reranking. It adds latency and cost.
+        # Making it opt-in ensures existing deployments aren't affected.
+
+        self._reranker: Optional[RerankerProvider] = None
+
+        if reranker_provider is not None:
+            # Allow override for testing
+            self._reranker = reranker_provider
+            print("[RAGPipeline] Using provided reranker provider (override)")
+        else:
+            # USE SHARED PROVIDER (only if reranking is enabled)
+            self._reranker = get_reranker()
+            if self._reranker:
+                print(f"[RAGPipeline] Using SHARED reranker: {self._reranker.get_provider_name()}")
+                print(f"[RAGPipeline] Retrieval: {settings.retrieval_top_k} -> Rerank -> {settings.final_top_k} docs")
+            else:
+                print("[RAGPipeline] Reranking is DISABLED (default behavior)")
+                print("[RAGPipeline] To enable: set ENABLE_RERANKING=true")
+
+        # =====================================================================
+        # STEP 7: Initialize the Evaluator (OPTIONAL, CONFIG-DRIVEN)
+        # =====================================================================
+        # The evaluator measures RAG quality without affecting responses.
+        #
+        # IMPORTANT - BACKWARD COMPATIBILITY:
+        # -----------------------------------
+        # - When ENABLE_EVALUATION=false (default): No evaluator overhead
+        # - When ENABLE_EVALUATION=true: Metrics computed after each query
+        #
+        # The evaluator NEVER modifies the answer or sources.
+        # It only observes and measures quality.
+
+        self._evaluator: Optional[RAGEvaluator] = None
+
+        if settings.enable_evaluation:
+            self._evaluator = get_evaluator()
+            print(f"[RAGPipeline] Evaluation ENABLED")
+            print(f"[RAGPipeline] RAGAS: {'enabled' if settings.enable_ragas else 'disabled'}")
+        else:
+            print("[RAGPipeline] Evaluation is DISABLED (default behavior)")
+            print("[RAGPipeline] To enable: set ENABLE_EVALUATION=true")
+
+        # =====================================================================
         # Demo document seeding (DISABLED BY DEFAULT FOR PRODUCTION)
         # =====================================================================
         # Demo documents are example documents for testing/learning.
@@ -351,14 +486,22 @@ class RAGPipeline:
         This is the main entry point for the RAG process.
         It orchestrates all the steps needed to answer a question.
 
-        STEP 4 CHANGES:
-        ---------------
-        Real LLM generation is now used:
+        STEP 6 CHANGES (RERANKING):
+        ---------------------------
+        The pipeline now supports optional reranking:
+
+        WITHOUT reranking (ENABLE_RERANKING=false, default):
         1. Question is converted to embedding
-        2. Embedding is used to search Qdrant
-        3. Similar documents are returned with scores
-        4. Documents + question are sent to the LLM
-        5. LLM generates a real, coherent answer
+        2. Vector search retrieves FINAL_TOP_K documents
+        3. Documents + question are sent to the LLM
+        4. LLM generates answer
+
+        WITH reranking (ENABLE_RERANKING=true):
+        1. Question is converted to embedding
+        2. Vector search retrieves RETRIEVAL_TOP_K candidates
+        3. Reranker scores and filters to FINAL_TOP_K
+        4. Best documents + question are sent to the LLM
+        5. LLM generates answer
 
         Args:
             question: The user's question as a string.
@@ -378,14 +521,17 @@ class RAGPipeline:
         STEP-BY-STEP PROCESS:
         1. Validate the input question
         2. Generate embedding for the question
-        3. Search vector store for similar documents (STEP 3!)
-        4. Generate answer using documents (mocked)
+        3. Search vector store for similar documents
+        3.5 RERANK documents (if enabled)
+        4. Generate answer using documents
         5. Extract and return source citations
         """
         print("\n" + "=" * 60)
         print("RUNNING RAG PIPELINE")
         print("=" * 60)
         print(f"Question: {question}")
+        reranking_status = "ENABLED" if self._reranker else "DISABLED"
+        print(f"Reranking: {reranking_status}")
         print("=" * 60)
 
         # =====================================================================
@@ -418,25 +564,90 @@ class RAGPipeline:
         # =====================================================================
         # STEP 3: Retrieve relevant documents using vector search
         # =====================================================================
-        # THIS IS THE KEY STEP 3 CHANGE!
-        # Instead of returning mock documents, we now:
-        # 1. Use the question embedding to query Qdrant
-        # 2. Find documents with similar embeddings
-        # 3. Get real similarity scores
+        # STEP 6 ENHANCEMENT:
+        # -------------------
+        # We now support two retrieval modes based on ENABLE_RERANKING:
         #
-        # If vector search fails, we fall back to mock documents
+        # WITHOUT reranking (default):
+        #   - Retrieve FINAL_TOP_K documents directly
+        #   - Same behavior as before Step 6
+        #
+        # WITH reranking:
+        #   - Retrieve RETRIEVAL_TOP_K candidates (larger set)
+        #   - Reranker will filter to FINAL_TOP_K
+        #   - Better precision through two-stage retrieval
 
-        print("\n[STEP 3] Searching for relevant documents...")
+        # Determine how many documents to retrieve
+        # - With reranking: get more candidates for the reranker to score
+        # - Without reranking: get only the final documents needed
+        if self._reranker is not None:
+            retrieval_count = settings.retrieval_top_k
+            print(f"\n[STEP 3] Searching for relevant documents (reranking mode)...")
+            print(f"[STEP 3] Retrieving {retrieval_count} candidates for reranking")
+        else:
+            retrieval_count = settings.final_top_k
+            print(f"\n[STEP 3] Searching for relevant documents...")
+            print(f"[STEP 3] Retrieving top {retrieval_count} documents")
 
         if question_embedding is not None and self._vector_store is not None:
             # USE REAL VECTOR SEARCH!
-            retrieved_documents = self._retrieve_documents(question_embedding)
+            retrieved_documents = self._retrieve_documents(
+                question_embedding,
+                top_k=retrieval_count
+            )
         else:
             # Fall back to mocked retrieval if no embedding/store
             print("[STEP 3] Using mock retrieval (no embedding or vector store)")
             retrieved_documents = self._mock_retrieve_documents(question)
 
         print(f"[STEP 3] Retrieved {len(retrieved_documents)} documents")
+
+        # =====================================================================
+        # STEP 3.5: RERANK documents (OPTIONAL, STEP 6 FEATURE)
+        # =====================================================================
+        # If reranking is enabled, we score each candidate document
+        # and keep only the most relevant ones.
+        #
+        # WHY RERANKING HELPS:
+        # --------------------
+        # Vector search finds documents with similar embeddings, but
+        # similarity doesn't always mean relevance. Reranking:
+        # 1. Scores each document's actual relevance to the query
+        # 2. Filters out false positives (high similarity but low relevance)
+        # 3. Ensures only the best documents reach the LLM
+        #
+        # OBSERVABILITY:
+        # --------------
+        # We log detailed information about the reranking process:
+        # - How many documents were retrieved
+        # - How many survived reranking
+        # - The rerank scores of surviving documents
+
+        if self._reranker is not None and retrieved_documents:
+            print(f"\n[STEP 3.5] Reranking {len(retrieved_documents)} documents...")
+
+            # Call the reranker
+            reranked_documents = self._reranker.rerank(
+                query=question,
+                documents=retrieved_documents,
+                top_k=settings.final_top_k,
+                min_score=settings.reranking_min_score
+            )
+
+            # Log reranking results
+            print(f"[STEP 3.5] Reranking complete:")
+            print(f"  - Input:  {len(retrieved_documents)} candidates")
+            print(f"  - Output: {len(reranked_documents)} documents (top {settings.final_top_k})")
+
+            if reranked_documents:
+                print(f"  - Score range: {reranked_documents[-1].get('rerank_score', 0):.3f} - {reranked_documents[0].get('rerank_score', 0):.3f}")
+
+            # Use reranked documents for generation
+            retrieved_documents = reranked_documents
+
+        elif self._reranker is None and settings.enable_reranking:
+            # Reranking was requested but reranker not available
+            print("[STEP 3.5] Reranking requested but reranker not available")
 
         # =====================================================================
         # STEP 4: Generate the answer using the LLM
@@ -467,16 +678,73 @@ class RAGPipeline:
         sources = self._extract_sources(retrieved_documents)
 
         # =====================================================================
-        # STEP 6: Build and return the final response
+        # STEP 6: Build the response (UNCHANGED FROM PREVIOUS STEPS)
+        # =====================================================================
+        # Build the response object first. This ensures the response format
+        # is IDENTICAL to before Step 7, maintaining backward compatibility.
+
+        response = {
+            "answer": answer,
+            "sources": sources
+        }
+
+        # =====================================================================
+        # STEP 7: Evaluate the response (OPTIONAL, NON-BLOCKING)
+        # =====================================================================
+        # If evaluation is enabled, compute quality metrics.
+        #
+        # IMPORTANT - NON-BLOCKING:
+        # -------------------------
+        # Evaluation happens AFTER the response is built.
+        # It NEVER modifies the answer or sources.
+        # If evaluation fails, the response is still returned.
+        #
+        # WHAT WE EVALUATE:
+        # -----------------
+        # - Retrieval: How good were the retrieved documents?
+        # - Generation: Is the answer grounded in context?
+        #
+        # The evaluation result can optionally be included in the response
+        # or just logged for monitoring purposes.
+
+        if self._evaluator and self._evaluator.is_enabled:
+            try:
+                print("\n[STEP 7] Running evaluation (optional, non-blocking)...")
+
+                eval_result = self._evaluator.evaluate(
+                    question=question,
+                    answer=answer,
+                    retrieved_documents=retrieved_documents,
+                    # Note: ground_truth_ids would come from a test dataset
+                    # In production, this is typically None
+                    ground_truth_ids=None
+                )
+
+                # Get summary for logging
+                summary = eval_result.get_summary()
+                if summary:
+                    print(f"[STEP 7] Evaluation summary:")
+                    for metric, value in summary.items():
+                        if value is not None:
+                            print(f"  - {metric}: {value:.3f}")
+
+                # Optionally include evaluation in response
+                # This is useful for debugging but can be disabled
+                if settings.enable_evaluation:
+                    response["evaluation"] = eval_result.to_dict()
+
+            except Exception as e:
+                # Evaluation failure should NEVER affect the response
+                print(f"[STEP 7] WARNING: Evaluation failed (non-blocking): {e}")
+
+        # =====================================================================
+        # FINAL: Return the response
         # =====================================================================
         print("\n" + "=" * 60)
         print("RAG PIPELINE COMPLETE")
         print("=" * 60)
 
-        return {
-            "answer": answer,
-            "sources": sources
-        }
+        return response
 
     def _embed_question(self, question: str) -> Optional[List[float]]:
         """
@@ -1223,3 +1491,85 @@ class RAGPipeline:
             "provider_configured": True,
             "model_name": self._llm_provider.get_model_name()
         }
+
+    def get_reranker_info(self) -> Dict[str, Any]:
+        """
+        Get information about the current reranker configuration.
+
+        This method is useful for debugging and monitoring.
+        It returns information about whether reranking is enabled
+        and what provider is being used.
+
+        STEP 6 ADDITION:
+        ----------------
+        This method helps understand the retrieval enhancement status.
+
+        Returns:
+            A dictionary containing:
+            - "enabled": Whether reranking is enabled
+            - "provider_name": The reranker provider name (if enabled)
+            - "retrieval_top_k": Number of candidates retrieved
+            - "final_top_k": Number of documents after reranking
+            - "min_score": Minimum rerank score threshold
+
+        Example:
+            pipeline = RAGPipeline()
+            info = pipeline.get_reranker_info()
+            print(f"Reranking enabled: {info['enabled']}")
+            print(f"Provider: {info['provider_name']}")
+        """
+        if self._reranker is None:
+            return {
+                "enabled": False,
+                "provider_name": None,
+                "retrieval_top_k": settings.final_top_k,  # Without reranking, we fetch final_top_k directly
+                "final_top_k": settings.final_top_k,
+                "min_score": None
+            }
+
+        return {
+            "enabled": True,
+            "provider_name": self._reranker.get_provider_name(),
+            "retrieval_top_k": settings.retrieval_top_k,
+            "final_top_k": settings.final_top_k,
+            "min_score": settings.reranking_min_score
+        }
+
+    def get_evaluator_info(self) -> Dict[str, Any]:
+        """
+        Get information about the current evaluator configuration.
+
+        This method is useful for debugging and monitoring.
+        It returns information about whether evaluation is enabled
+        and what metrics are being computed.
+
+        STEP 7 ADDITION:
+        ----------------
+        This method helps understand the evaluation status.
+
+        Returns:
+            A dictionary containing:
+            - "enabled": Whether evaluation is enabled
+            - "ragas_enabled": Whether RAGAS metrics are enabled
+            - "default_k": Default K value for @K metrics
+            - "log_results": Whether results are logged
+            - "store_history": Whether history is being stored
+            - "history_size": Number of evaluations in history
+
+        Example:
+            pipeline = RAGPipeline()
+            info = pipeline.get_evaluator_info()
+            print(f"Evaluation enabled: {info['enabled']}")
+            print(f"RAGAS enabled: {info['ragas_enabled']}")
+        """
+        if self._evaluator is None:
+            return {
+                "enabled": False,
+                "ragas_enabled": False,
+                "default_k": settings.evaluation_default_k,
+                "log_results": False,
+                "store_history": False,
+                "history_size": 0
+            }
+
+        return self._evaluator.get_status()

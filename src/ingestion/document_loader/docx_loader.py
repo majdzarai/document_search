@@ -1,11 +1,18 @@
 """
-DOCX File Loader
-=================
+DOCX File Loader (Enhanced)
+============================
 
 WHAT IS THIS LOADER?
 --------------------
 This loader handles DOCX (Microsoft Word) files.
 DOCX is the default format for Microsoft Word documents since 2007.
+
+ENHANCEMENTS IN THIS VERSION:
+-----------------------------
+1. TEXT NORMALIZATION: Cleans extracted text for better quality
+2. IMPROVED TABLE EXTRACTION: Better handling of complex tables
+3. HEADER/FOOTER HANDLING: Optional extraction of headers/footers
+4. PARAGRAPH PRESERVATION: Maintains document structure
 
 DOCX FILE STRUCTURE:
 --------------------
@@ -39,23 +46,34 @@ For .doc files (old Word format), you would need:
 """
 
 import os
-from typing import List
+from typing import List, Optional
 
 from src.ingestion.document_loader.base import DocumentLoader, LoadedDocument
+from src.ingestion.text_utils import (
+    TextNormalizer,
+    NormalizationConfig,
+    normalize_text
+)
 
 
 class DOCXLoader(DocumentLoader):
     """
-    Document loader for DOCX (Microsoft Word) files.
+    Document loader for DOCX (Microsoft Word) files with text normalization.
 
     This loader uses python-docx to extract text from Word documents.
-    It extracts text from paragraphs and tables.
+    It extracts text from paragraphs and tables with optional normalization.
 
     Supported formats:
     - .docx (Word 2007 and later)
 
     NOT supported:
     - .doc (older Word format)
+
+    Features:
+    - Paragraph and table extraction
+    - Text normalization (whitespace, control chars)
+    - Document property extraction (title, author, etc.)
+    - Optional header/footer extraction
 
     Requirements:
     - python-docx package: pip install python-docx
@@ -65,6 +83,53 @@ class DOCXLoader(DocumentLoader):
         doc = loader.load("report.docx")
         print(doc.text)
     """
+
+    def __init__(
+        self,
+        normalize: bool = True,
+        include_tables: bool = True,
+        include_headers_footers: bool = False
+    ):
+        """
+        Initialize the DOCX loader.
+
+        Args:
+            normalize: Whether to normalize extracted text (default: True).
+                      Normalization removes control characters, normalizes
+                      whitespace, and preserves paragraph boundaries.
+
+            include_tables: Whether to extract text from tables (default: True).
+                           Tables are added as tab-separated rows.
+
+            include_headers_footers: Whether to include header/footer text
+                                    (default: False). Headers/footers often
+                                    contain repeated content that may not
+                                    be useful for RAG.
+
+        Example:
+            # Default settings
+            loader = DOCXLoader()
+
+            # Include headers and footers
+            loader = DOCXLoader(include_headers_footers=True)
+
+            # Skip tables
+            loader = DOCXLoader(include_tables=False)
+        """
+        self.normalize = normalize
+        self.include_tables = include_tables
+        self.include_headers_footers = include_headers_footers
+
+        self.normalizer = TextNormalizer(NormalizationConfig(
+            remove_control_chars=True,
+            normalize_whitespace=True,
+            normalize_newlines=True,
+            remove_page_markers=False,
+            detect_headers_footers=False,  # We handle this explicitly
+            fix_ocr_artifacts=False,
+            preserve_paragraphs=True,
+            strip_lines=True
+        ))
 
     @property
     def supported_extensions(self) -> List[str]:
@@ -85,8 +150,10 @@ class DOCXLoader(DocumentLoader):
         This method:
         1. Opens the DOCX file
         2. Extracts text from all paragraphs
-        3. Extracts text from tables (if any)
-        4. Returns combined text with metadata
+        3. Extracts text from tables (if enabled)
+        4. Optionally extracts headers/footers
+        5. Normalizes the text (if enabled)
+        6. Returns combined text with metadata
 
         Args:
             file_path: Path to the DOCX file.
@@ -150,43 +217,95 @@ class DOCXLoader(DocumentLoader):
         # =====================================================================
         # Step 6: Extract text from tables
         # =====================================================================
-        # Tables contain cells organized in rows and columns.
-        # We extract text from each cell.
-
         table_texts = []
-        for table_idx, table in enumerate(doc.tables, start=1):
-            for row in table.rows:
-                row_texts = []
-                for cell in row.cells:
-                    cell_text = cell.text.strip()
-                    if cell_text:
-                        row_texts.append(cell_text)
-                if row_texts:
-                    # Join cells with tabs (table-like format)
-                    table_texts.append("\t".join(row_texts))
+        table_count = 0
 
-        if table_texts:
-            print(f"[DOCXLoader] Found {len(doc.tables)} tables")
+        if self.include_tables and doc.tables:
+            for table_idx, table in enumerate(doc.tables, start=1):
+                table_rows = []
+                for row in table.rows:
+                    row_texts = []
+                    for cell in row.cells:
+                        cell_text = cell.text.strip()
+                        if cell_text:
+                            # Clean cell text
+                            cell_text = cell_text.replace('\n', ' ')
+                            row_texts.append(cell_text)
+                    if row_texts:
+                        # Join cells with tabs (table-like format)
+                        table_rows.append("\t".join(row_texts))
+
+                if table_rows:
+                    table_texts.extend(table_rows)
+                    table_count += 1
+
+            if table_count:
+                print(f"[DOCXLoader] Found {table_count} tables")
 
         # =====================================================================
-        # Step 7: Combine all text
+        # Step 7: Extract headers and footers (optional)
         # =====================================================================
-        # Combine paragraphs first, then tables
+        header_footer_texts = []
+
+        if self.include_headers_footers:
+            try:
+                # Access document sections for headers/footers
+                for section in doc.sections:
+                    # Header
+                    if section.header:
+                        for para in section.header.paragraphs:
+                            text = para.text.strip()
+                            if text:
+                                header_footer_texts.append(f"[Header] {text}")
+
+                    # Footer
+                    if section.footer:
+                        for para in section.footer.paragraphs:
+                            text = para.text.strip()
+                            if text:
+                                header_footer_texts.append(f"[Footer] {text}")
+
+                if header_footer_texts:
+                    print(f"[DOCXLoader] Found {len(header_footer_texts)} header/footer items")
+
+            except Exception as e:
+                print(f"[DOCXLoader] Warning: Could not extract headers/footers: {e}")
+
+        # =====================================================================
+        # Step 8: Combine all text
+        # =====================================================================
         all_text_parts = []
 
+        # Add headers/footers first (if any)
+        if header_footer_texts:
+            all_text_parts.append("--- Headers/Footers ---")
+            all_text_parts.extend(header_footer_texts)
+            all_text_parts.append("")  # Blank line separator
+
+        # Add main content
         if paragraph_texts:
             all_text_parts.extend(paragraph_texts)
 
+        # Add tables at the end
         if table_texts:
-            all_text_parts.append("\n--- Tables ---\n")
+            all_text_parts.append("")  # Blank line separator
+            all_text_parts.append("--- Tables ---")
             all_text_parts.extend(table_texts)
 
         full_text = "\n".join(all_text_parts)
+        original_char_count = len(full_text)
 
-        print(f"[DOCXLoader] Total characters: {len(full_text)}")
+        print(f"[DOCXLoader] Total characters (before normalization): {original_char_count}")
 
         # =====================================================================
-        # Step 8: Extract document properties (metadata)
+        # Step 9: Normalize the text
+        # =====================================================================
+        if self.normalize:
+            full_text = self.normalizer.normalize(full_text)
+            print(f"[DOCXLoader] Normalized text ({original_char_count} → {len(full_text)} chars)")
+
+        # =====================================================================
+        # Step 10: Extract document properties (metadata)
         # =====================================================================
         doc_properties = {}
         try:
@@ -205,7 +324,7 @@ class DOCXLoader(DocumentLoader):
             pass
 
         # =====================================================================
-        # Step 9: Build metadata
+        # Step 11: Build metadata
         # =====================================================================
         metadata = {
             "source": file_name,
@@ -213,12 +332,16 @@ class DOCXLoader(DocumentLoader):
             "file_path": file_path,
             "file_size_bytes": file_size,
             "paragraph_count": len(paragraph_texts),
-            "table_count": len(doc.tables),
+            "table_count": table_count,
             "char_count": len(full_text),
+            "original_char_count": original_char_count,
+            "normalized": self.normalize,
+            "includes_tables": self.include_tables,
+            "includes_headers_footers": self.include_headers_footers,
             **doc_properties  # Include document properties
         }
 
         # =====================================================================
-        # Step 10: Return the loaded document
+        # Step 12: Return the loaded document
         # =====================================================================
         return LoadedDocument(text=full_text, metadata=metadata)

@@ -41,6 +41,8 @@ EXAMPLE USAGE:
     api_key = settings.openrouter_api_key
     model_name = settings.embedding_model
 """
+from dotenv import load_dotenv
+load_dotenv()
 
 import os
 from typing import Optional
@@ -354,6 +356,355 @@ class Settings:
         seed_demo_str = os.getenv("SEED_DEMO_DOCUMENTS", "false").lower()
         self.seed_demo_documents: bool = seed_demo_str in ("true", "1", "yes")
 
+        # =====================================================================
+        # Ingestion & Chunking Configuration (STEP 5 ENHANCEMENTS)
+        # =====================================================================
+        # These settings control how documents are processed during ingestion.
+        # They affect text extraction quality and chunking strategy.
+        #
+        # CHUNKING STRATEGIES:
+        # --------------------
+        # - "recursive": (DEFAULT) Splits by characters with hierarchy
+        #                Best for: General documents, preserves structure
+        # - "sentence":  Splits on sentence boundaries
+        #                Best for: Articles, news, conversational text
+        # - "semantic":  Splits by meaning using embeddings (requires API calls)
+        #                Best for: Technical docs, topic-heavy content
+        #
+        # IMPORTANT: Semantic chunking uses the embedding provider, so it will
+        # consume API credits. Use "recursive" or "sentence" to minimize costs.
+        self.chunking_strategy: str = os.getenv(
+            "CHUNKING_STRATEGY",
+            "recursive"  # Default: safe, fast, no extra API calls
+        )
+
+        # SEMANTIC_SIMILARITY_THRESHOLD: Controls when to split in semantic chunking
+        #
+        # HOW IT WORKS:
+        # -------------
+        # When using semantic chunking, consecutive sentences are compared.
+        # If similarity drops BELOW this threshold, a new chunk starts.
+        #
+        # TUNING GUIDE:
+        # - 0.3-0.5: More aggressive splitting, smaller chunks
+        # - 0.5-0.7: Balanced (recommended range)
+        # - 0.7-0.9: Less splitting, larger chunks
+        #
+        # Lower threshold = more chunks (finer-grained)
+        # Higher threshold = fewer chunks (coarser-grained)
+        self.semantic_similarity_threshold: float = float(os.getenv(
+            "SEMANTIC_SIMILARITY_THRESHOLD",
+            "0.75"  # Default: balanced splitting
+        ))
+
+        # MAX_CHUNK_SIZE: Maximum characters per chunk
+        #
+        # WHY THIS MATTERS:
+        # -----------------
+        # - Too large: Loses retrieval precision, may exceed embedding limits
+        # - Too small: Loses context, creates too many chunks
+        # - Sweet spot: 300-1000 characters for most use cases
+        #
+        # This is a HARD LIMIT - chunks will never exceed this size.
+        self.max_chunk_size: int = int(os.getenv(
+            "MAX_CHUNK_SIZE",
+            "512"  # Default: good balance for most embedding models
+        ))
+
+        # MIN_CHUNK_SIZE: Minimum characters per chunk
+        #
+        # WHY THIS MATTERS:
+        # -----------------
+        # Prevents creation of tiny, meaningless chunks.
+        # Chunks smaller than this will be merged with neighbors.
+        #
+        # TUNING GUIDE:
+        # - 50-100: For dense, technical content
+        # - 100-200: For general content (recommended)
+        # - 200+: For verbose, narrative content
+        self.min_chunk_size: int = int(os.getenv(
+            "MIN_CHUNK_SIZE",
+            "100"  # Default: prevents tiny chunks
+        ))
+
+        # CHUNK_OVERLAP: Characters of overlap between consecutive chunks
+        #
+        # WHY OVERLAP?
+        # ------------
+        # Overlap ensures context isn't lost at chunk boundaries.
+        # Without overlap, a question spanning two chunks might miss context.
+        #
+        # TUNING GUIDE:
+        # - 0: No overlap (faster, less context preservation)
+        # - 50-100: Light overlap (recommended for most cases)
+        # - 100-200: Heavy overlap (better context, more redundancy)
+        self.chunk_overlap: int = int(os.getenv(
+            "CHUNK_OVERLAP",
+            "50"  # Default: moderate overlap
+        ))
+
+        # ENABLE_PDF_OCR: Whether to use OCR for scanned/image-based PDFs
+        #
+        # WHAT IS OCR?
+        # ------------
+        # OCR (Optical Character Recognition) converts images of text into
+        # actual text. This is needed for:
+        # - Scanned documents
+        # - PDFs created from images
+        # - PDFs with embedded images containing text
+        #
+        # REQUIREMENTS:
+        # -------------
+        # - pytesseract package: pip install pytesseract
+        # - pdf2image package: pip install pdf2image
+        # - Tesseract OCR installed on system:
+        #   - Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
+        #   - Linux: apt-get install tesseract-ocr
+        #   - Mac: brew install tesseract
+        # - Poppler (for pdf2image):
+        #   - Windows: Download from https://github.com/oschwartz10612/poppler-windows
+        #   - Linux: apt-get install poppler-utils
+        #   - Mac: brew install poppler
+        #
+        # PERFORMANCE NOTE:
+        # -----------------
+        # OCR is SLOW and CPU-intensive. Only enable if you need it.
+        # Default is FALSE to maintain fast ingestion for regular PDFs.
+        enable_ocr_str = os.getenv("ENABLE_PDF_OCR", "false").lower()
+        self.enable_pdf_ocr: bool = enable_ocr_str in ("true", "1", "yes")
+
+        # TESSERACT_PATH: Path to Tesseract executable (optional)
+        #
+        # Only needed on Windows if Tesseract is not in system PATH.
+        # Example: C:\Program Files\Tesseract-OCR\tesseract.exe
+        self.tesseract_path: Optional[str] = os.getenv("TESSERACT_PATH")
+
+        # =====================================================================
+        # Retrieval & Reranking Configuration (STEP 6)
+        # =====================================================================
+        # These settings control the retrieval enhancement and reranking stage
+        # that happens BETWEEN vector search and LLM generation.
+        #
+        # WHY RERANKING?
+        # --------------
+        # Vector search (embedding similarity) is fast but not always precise.
+        # Reranking is a second-stage process that:
+        # 1. Takes a larger candidate set from vector search
+        # 2. Scores each candidate more carefully (using cross-encoders or LLMs)
+        # 3. Returns only the most relevant documents
+        #
+        # This two-stage approach gives us:
+        # - SPEED: Vector search quickly narrows down candidates
+        # - PRECISION: Reranking ensures only the best documents reach the LLM
+        #
+        # THE RETRIEVAL FLOW WITH RERANKING:
+        # -----------------------------------
+        # 1. User asks: "What is RAG?"
+        # 2. Vector search retrieves RETRIEVAL_TOP_K candidates (e.g., 20)
+        # 3. Reranker scores all 20 candidates more carefully
+        # 4. Top FINAL_TOP_K documents (e.g., 5) are sent to the LLM
+        # 5. LLM generates answer based on the 5 best documents
+        #
+        # WITHOUT RERANKING (existing behavior preserved by default):
+        # 1. User asks: "What is RAG?"
+        # 2. Vector search retrieves FINAL_TOP_K candidates (e.g., 5)
+        # 3. All 5 documents are sent directly to the LLM
+
+        # RETRIEVAL_TOP_K: Number of candidates to retrieve from vector search
+        #
+        # WHY A LARGE NUMBER?
+        # -------------------
+        # When reranking is enabled, we fetch more documents initially
+        # because the reranker will filter them down. This increases
+        # recall (chance of finding relevant docs) before precision filtering.
+        #
+        # WHEN RERANKING IS DISABLED:
+        # ---------------------------
+        # This setting is ignored. We fetch FINAL_TOP_K directly.
+        #
+        # TUNING GUIDE:
+        # - 10-20: Good for small document collections
+        # - 20-50: Better recall for larger collections
+        # - 50+: Maximum recall but slower reranking
+        self.retrieval_top_k: int = int(os.getenv(
+            "RETRIEVAL_TOP_K",
+            "20"  # Default: fetch 20 candidates for reranking
+        ))
+
+        # FINAL_TOP_K: Number of documents to send to the LLM
+        #
+        # WHY LIMIT DOCUMENTS?
+        # --------------------
+        # 1. LLM context windows have limits
+        # 2. More documents = higher cost (more tokens)
+        # 3. Too many documents can confuse the LLM
+        # 4. Quality > quantity for answer generation
+        #
+        # TUNING GUIDE:
+        # - 3-5: Good for most use cases
+        # - 5-10: For complex questions needing more context
+        # - 10+: Rarely needed, may hurt answer quality
+        self.final_top_k: int = int(os.getenv(
+            "FINAL_TOP_K",
+            "5"  # Default: send 5 best documents to LLM
+        ))
+
+        # ENABLE_RERANKING: Whether to use the reranking stage
+        #
+        # IMPORTANT - BACKWARD COMPATIBILITY:
+        # -----------------------------------
+        # Default is FALSE to preserve existing behavior.
+        # When disabled:
+        # - Vector search returns FINAL_TOP_K documents directly
+        # - No additional API calls for reranking
+        # - Fastest retrieval but potentially less precise
+        #
+        # When enabled:
+        # - Vector search returns RETRIEVAL_TOP_K candidates
+        # - Reranker scores and filters to FINAL_TOP_K
+        # - Better precision but additional processing cost
+        enable_reranking_str = os.getenv("ENABLE_RERANKING", "true").lower()
+        self.enable_reranking: bool = enable_reranking_str in ("true", "1", "yes")
+
+        # RERANKER_PROVIDER: Which reranking provider to use
+        #
+        # AVAILABLE PROVIDERS:
+        # --------------------
+        # - "simple": LLM-based reranker using OpenRouter
+        #             Uses the configured LLM to score relevance
+        #             No additional dependencies required
+        #             Good for getting started
+        #
+        # FUTURE PROVIDERS (not yet implemented):
+        # - "cohere": Cohere Rerank API (fast, accurate)
+        # - "cross_encoder": Local cross-encoder model
+        # - "bge_reranker": BGE reranker model
+        self.reranker_provider: str = os.getenv(
+            "RERANKER_PROVIDER",
+            "simple"  # Default: LLM-based reranker
+        )
+
+        # RERANKING_MIN_SCORE: Minimum relevance score to keep a document
+        #
+        # WHAT IS THIS?
+        # -------------
+        # After reranking, each document has a relevance score (0.0 to 1.0).
+        # Documents below this threshold are discarded even if they would
+        # otherwise make it into the top FINAL_TOP_K.
+        #
+        # WHY HAVE A THRESHOLD?
+        # ---------------------
+        # Sometimes there are fewer than FINAL_TOP_K relevant documents.
+        # Without a threshold, irrelevant documents would be included.
+        # The threshold ensures only actually relevant docs reach the LLM.
+        #
+        # TUNING GUIDE:
+        # - 0.0: No filtering, always return FINAL_TOP_K (if available)
+        # - 0.3-0.5: Light filtering, keeps most candidates
+        # - 0.5-0.7: Moderate filtering (recommended)
+        # - 0.7+: Strict filtering, may return fewer than FINAL_TOP_K
+        self.reranking_min_score: float = float(os.getenv(
+            "RERANKING_MIN_SCORE",
+            "0.0"  # Default: no threshold (backward compatible)
+        ))
+
+        # =====================================================================
+        # Evaluation Configuration (STEP 7)
+        # =====================================================================
+        # These settings control the RAG evaluation layer that measures
+        # retrieval quality, reranking impact, and answer quality.
+        #
+        # WHY EVALUATION?
+        # ---------------
+        # Production RAG systems need measurable quality metrics to:
+        # 1. Compare different configurations (chunking, reranking, etc.)
+        # 2. Detect regressions when changes are made
+        # 3. Report quality to clients/stakeholders
+        # 4. Optimize retrieval and generation settings
+        #
+        # EVALUATION COMPONENTS:
+        # ----------------------
+        # 1. Retrieval Metrics: Recall@K, Precision@K, MRR, Hit Rate
+        # 2. Generation Metrics: Answer relevance, context grounding
+        # 3. RAGAS Integration: Optional advanced metrics (if installed)
+        #
+        # IMPORTANT - NO PIPELINE CHANGES:
+        # ---------------------------------
+        # Evaluation is OBSERVATIONAL ONLY. It does NOT modify:
+        # - The retrieval process
+        # - The reranking logic
+        # - The LLM generation
+        # It simply measures the quality of outputs.
+
+        # ENABLE_EVALUATION: Master switch for evaluation features
+        #
+        # When enabled:
+        # - Evaluation metrics are computed after each query
+        # - Results are logged and can be exported
+        # - Slight latency increase due to metric computation
+        #
+        # When disabled (default):
+        # - No evaluation overhead
+        # - Same behavior as before Step 7
+        enable_eval_str = os.getenv("ENABLE_EVALUATION", "false").lower()
+        self.enable_evaluation: bool = enable_eval_str in ("true", "1", "yes")
+
+        # EVALUATION_DEFAULT_K: Default K value for @K metrics
+        #
+        # Used for Recall@K, Precision@K, etc. when not specified.
+        # This determines how many top results to consider.
+        #
+        # TUNING GUIDE:
+        # - 3-5: Common for production (matches typical FINAL_TOP_K)
+        # - 10: For broader evaluation
+        # - Should typically match FINAL_TOP_K for consistency
+        self.evaluation_default_k: int = int(os.getenv(
+            "EVALUATION_DEFAULT_K",
+            "5"  # Default: matches typical FINAL_TOP_K
+        ))
+
+        # ENABLE_RAGAS: Whether to use RAGAS library for advanced metrics
+        #
+        # RAGAS (Retrieval Augmented Generation Assessment) provides:
+        # - Faithfulness: Is the answer grounded in context?
+        # - Answer Relevancy: Does the answer address the question?
+        # - Context Precision: Are retrieved docs relevant?
+        # - Context Recall: Are all relevant docs retrieved?
+        #
+        # REQUIREMENTS:
+        # - pip install ragas
+        # - May require LLM calls for some metrics
+        #
+        # When disabled (default):
+        # - Only lightweight, deterministic metrics are used
+        # - No additional dependencies required
+        enable_ragas_str = os.getenv("ENABLE_RAGAS", "false").lower()
+        self.enable_ragas: bool = enable_ragas_str in ("true", "1", "yes")
+
+        # EVALUATION_LOG_RESULTS: Whether to log evaluation results
+        #
+        # When enabled:
+        # - Metrics are printed to console/logs after each evaluation
+        # - Useful for debugging and monitoring
+        #
+        # When disabled:
+        # - Metrics are computed but only returned, not logged
+        eval_log_str = os.getenv("EVALUATION_LOG_RESULTS", "true").lower()
+        self.evaluation_log_results: bool = eval_log_str in ("true", "1", "yes")
+
+        # EVALUATION_STORE_HISTORY: Whether to store evaluation history
+        #
+        # When enabled:
+        # - Evaluation results are stored in memory
+        # - Can be retrieved for analysis and reporting
+        # - Useful for batch evaluation and comparison
+        #
+        # When disabled:
+        # - Each evaluation is independent
+        # - Lower memory usage
+        eval_history_str = os.getenv("EVALUATION_STORE_HISTORY", "false").lower()
+        self.evaluation_store_history: bool = eval_history_str in ("true", "1", "yes")
+
     def validate(self) -> None:
         """
         Validate that required settings are configured.
@@ -437,6 +788,28 @@ class Settings:
             f"  qdrant_collection_name={self.qdrant_collection_name},\n"
             f"  qdrant_mode={qdrant_mode},\n"
             f"  qdrant_api_key={qdrant_key_status},\n"
+            f"  \n"
+            f"  # Ingestion & Chunking Configuration (STEP 5)\n"
+            f"  chunking_strategy={self.chunking_strategy},\n"
+            f"  semantic_similarity_threshold={self.semantic_similarity_threshold},\n"
+            f"  max_chunk_size={self.max_chunk_size},\n"
+            f"  min_chunk_size={self.min_chunk_size},\n"
+            f"  chunk_overlap={self.chunk_overlap},\n"
+            f"  enable_pdf_ocr={self.enable_pdf_ocr},\n"
+            f"  \n"
+            f"  # Retrieval & Reranking Configuration (STEP 6)\n"
+            f"  enable_reranking={self.enable_reranking},\n"
+            f"  reranker_provider={self.reranker_provider},\n"
+            f"  retrieval_top_k={self.retrieval_top_k},\n"
+            f"  final_top_k={self.final_top_k},\n"
+            f"  reranking_min_score={self.reranking_min_score},\n"
+            f"  \n"
+            f"  # Evaluation Configuration (STEP 7)\n"
+            f"  enable_evaluation={self.enable_evaluation},\n"
+            f"  evaluation_default_k={self.evaluation_default_k},\n"
+            f"  enable_ragas={self.enable_ragas},\n"
+            f"  evaluation_log_results={self.evaluation_log_results},\n"
+            f"  evaluation_store_history={self.evaluation_store_history},\n"
             f"  \n"
             f"  # Development Settings\n"
             f"  seed_demo_documents={self.seed_demo_documents}\n"

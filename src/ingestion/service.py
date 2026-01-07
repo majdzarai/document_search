@@ -72,7 +72,8 @@ from src.ingestion.document_loader import (
 from src.ingestion.chunking import (
     Chunker,
     RecursiveCharacterSplitter,
-    SentenceSplitter
+    SentenceSplitter,
+    SemanticSplitter
 )
 
 # Import metadata handling
@@ -162,8 +163,9 @@ class IngestionService:
         embedding_provider: Optional[EmbeddingProvider] = None,
         vector_store: Optional[VectorStoreProvider] = None,
         chunker: Optional[Chunker] = None,
-        chunk_size: int = 500,
-        chunk_overlap: int = 50
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+        chunking_strategy: Optional[str] = None
     ):
         """
         Initialize the ingestion service.
@@ -176,25 +178,38 @@ class IngestionService:
                          If None, creates from settings.
 
             chunker: Optional. Strategy for chunking text.
-                    If None, uses RecursiveCharacterSplitter.
+                    If None, creates based on CHUNKING_STRATEGY config.
 
-            chunk_size: Size of chunks in characters (default: 500).
+            chunk_size: Size of chunks in characters.
+                       If None, reads from MAX_CHUNK_SIZE config.
                        Only used if chunker is None.
 
-            chunk_overlap: Overlap between chunks (default: 50).
+            chunk_overlap: Overlap between chunks.
+                          If None, reads from CHUNK_OVERLAP config.
                           Only used if chunker is None.
 
+            chunking_strategy: Which chunking strategy to use.
+                              Options: "recursive", "sentence", "semantic"
+                              If None, reads from CHUNKING_STRATEGY config.
+                              Only used if chunker is None.
+
         Example:
-            # Default settings
+            # Default settings (uses config)
             service = IngestionService()
 
             # Custom chunking
             service = IngestionService(chunk_size=1000, chunk_overlap=100)
 
+            # Force semantic chunking
+            service = IngestionService(chunking_strategy="semantic")
+
             # Custom chunker
             from src.ingestion.chunking import SentenceSplitter
             service = IngestionService(chunker=SentenceSplitter())
         """
+        # Import settings for config-driven defaults
+        from src.core.config import settings
+
         print("\n" + "=" * 60)
         print("INITIALIZING INGESTION SERVICE")
         print("=" * 60)
@@ -253,17 +268,32 @@ class IngestionService:
                 print("[IngestionService] WARNING: Vector store not available")
 
         # =====================================================================
-        # Initialize chunker
+        # Initialize chunker (CONFIG-DRIVEN)
         # =====================================================================
+        # The chunking strategy can be configured via environment variables:
+        # - CHUNKING_STRATEGY: "recursive" (default), "sentence", or "semantic"
+        # - MAX_CHUNK_SIZE: Maximum chunk size in characters
+        # - MIN_CHUNK_SIZE: Minimum chunk size in characters
+        # - CHUNK_OVERLAP: Overlap between chunks
+        # - SEMANTIC_SIMILARITY_THRESHOLD: Threshold for semantic chunking
+
         if chunker is not None:
             self.chunker = chunker
             print("[IngestionService] Using provided chunker")
         else:
-            self.chunker = RecursiveCharacterSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap
+            # Get config values (with argument overrides)
+            effective_chunk_size = chunk_size if chunk_size is not None else settings.max_chunk_size
+            effective_chunk_overlap = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
+            effective_strategy = chunking_strategy if chunking_strategy is not None else settings.chunking_strategy
+
+            # Create chunker based on strategy
+            self.chunker = self._create_chunker(
+                strategy=effective_strategy,
+                chunk_size=effective_chunk_size,
+                chunk_overlap=effective_chunk_overlap,
+                min_chunk_size=settings.min_chunk_size,
+                similarity_threshold=settings.semantic_similarity_threshold
             )
-            print(f"[IngestionService] Using RecursiveCharacterSplitter (size={chunk_size})")
 
         # =====================================================================
         # Initialize metadata handlers
@@ -667,3 +697,84 @@ class IngestionService:
             List of file extensions (e.g., [".pdf", ".txt", ".html"])
         """
         return list(self.loaders.keys())
+
+    def _create_chunker(
+        self,
+        strategy: str,
+        chunk_size: int,
+        chunk_overlap: int,
+        min_chunk_size: int,
+        similarity_threshold: float
+    ) -> Chunker:
+        """
+        Create a chunker based on the specified strategy.
+
+        This method creates the appropriate chunker instance based on
+        the CHUNKING_STRATEGY configuration.
+
+        Args:
+            strategy: Chunking strategy ("recursive", "sentence", "semantic").
+            chunk_size: Maximum chunk size in characters.
+            chunk_overlap: Overlap between chunks.
+            min_chunk_size: Minimum chunk size in characters.
+            similarity_threshold: Threshold for semantic chunking.
+
+        Returns:
+            A Chunker instance configured according to the parameters.
+
+        Supported strategies:
+        - "recursive" (default): RecursiveCharacterSplitter
+          Best for: General documents, preserves structure
+          Pros: Fast, no API calls needed
+          Cons: May split mid-topic
+
+        - "sentence": SentenceSplitter
+          Best for: Articles, news, conversational text
+          Pros: Respects sentence boundaries
+          Cons: May create uneven chunks
+
+        - "semantic": SemanticSplitter
+          Best for: Technical docs, topic-heavy content
+          Pros: Chunks represent coherent ideas
+          Cons: Slower, uses embedding API
+        """
+        strategy_lower = strategy.lower().strip()
+
+        if strategy_lower == "semantic":
+            # Semantic chunking - uses embeddings for topic detection
+            print(f"[IngestionService] Creating SemanticSplitter")
+            print(f"[IngestionService] Threshold={similarity_threshold}, Size={min_chunk_size}-{chunk_size}")
+
+            # SemanticSplitter will get embedding provider from shared providers
+            chunker = SemanticSplitter(
+                embedding_provider=self.embedding_provider,
+                similarity_threshold=similarity_threshold,
+                min_chunk_size=min_chunk_size,
+                max_chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap
+            )
+            return chunker
+
+        elif strategy_lower == "sentence":
+            # Sentence-based chunking
+            print(f"[IngestionService] Creating SentenceSplitter (size={chunk_size})")
+
+            chunker = SentenceSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                min_chunk_size=min_chunk_size
+            )
+            return chunker
+
+        else:
+            # Default: Recursive character splitting
+            if strategy_lower != "recursive":
+                print(f"[IngestionService] Unknown strategy '{strategy}', using 'recursive'")
+
+            print(f"[IngestionService] Creating RecursiveCharacterSplitter (size={chunk_size})")
+
+            chunker = RecursiveCharacterSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap
+            )
+            return chunker

@@ -103,16 +103,19 @@
   <img src="https://user-images.githubusercontent.com/74038190/229223263-cf2e4b07-2615-4f87-9c38-e37600f8381a.gif" width="400" alt="Features Animation"/>
 </p>
 
-| Feature | Description |
-|---------|-------------|
-| **Document Ingestion** | Upload and process PDF, TXT, HTML, DOCX files automatically |
-| **Semantic Search** | Find relevant content based on meaning, not just keywords |
-| **AI-Powered Answers** | Generate human-like responses using leading LLMs |
-| **Source Citations** | Every answer includes document references |
-| **Model Agnostic** | Works with OpenAI, Anthropic, and more via OpenRouter |
-| **Vector Storage** | Powered by Qdrant for lightning-fast retrieval |
-| **Zero Infrastructure** | In-memory mode for instant setup |
-| **Production Ready** | Scale to cloud with Qdrant Cloud |
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Document Ingestion** | Upload and process PDF, TXT, HTML, DOCX files | DONE |
+| **Semantic Search** | Find relevant content based on meaning, not keywords | DONE |
+| **AI-Powered Answers** | Generate human-like responses using leading LLMs | DONE |
+| **Source Citations** | Every answer includes document references | DONE |
+| **Model Agnostic** | Works with OpenAI, Anthropic, and more via OpenRouter | DONE |
+| **Vector Storage** | Powered by Qdrant for lightning-fast retrieval | DONE |
+| **Reranking** | LLM-based re-scoring for improved relevance | DONE |
+| **Multiple Chunking** | Recursive, sentence, and semantic chunking strategies | DONE |
+| **Evaluation Metrics** | Quality metrics for retrieval and generation (RAGAS support) | DONE |
+| **Zero Infrastructure** | In-memory mode for instant setup | DONE |
+| **Production Ready** | Scale to cloud with Qdrant Cloud | DONE |
 
 ---
 
@@ -346,7 +349,14 @@ curl -X POST http://localhost:8000/query \
 | `LLM_MODEL` | No | `openai/gpt-3.5-turbo` | LLM for answer generation |
 | `VECTOR_DIMENSION` | No | `1536` | Embedding vector dimension |
 | `QDRANT_COLLECTION_NAME` | No | `rag_documents` | Vector collection name |
-| `SEED_DEMO_DOCUMENTS` | No | `false` | Load demo documents on startup |
+| `CHUNKING_STRATEGY` | No | `recursive` | `recursive`, `sentence`, or `semantic` |
+| `MAX_CHUNK_SIZE` | No | `512` | Maximum chunk size in characters |
+| `CHUNK_OVERLAP` | No | `50` | Overlap between chunks |
+| `ENABLE_RERANKING` | No | `false` | Enable LLM-based reranking |
+| `RERANKER_TOP_K` | No | `5` | Documents to return after reranking |
+| `ENABLE_EVALUATION` | No | `false` | Enable RAG quality metrics |
+| `ENABLE_RAGAS` | No | `false` | Enable RAGAS metrics (requires ragas package) |
+| `EVALUATION_DEFAULT_K` | No | `5` | K value for Precision@K, Recall@K |
 
 ### Vector Store Modes
 
@@ -409,31 +419,29 @@ export QDRANT_API_KEY=your-key
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        REST API LAYER (FastAPI)                      │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────────┐   │
-│  │  /health   │  │   /query   │  │  /ingest   │  │   /formats   │   │
-│  └────────────┘  └────────────┘  └────────────┘  └──────────────┘   │
+│    ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────────┐    │
+│    │ /health  │   │  /query  │   │ /ingest  │   │  /formats    │    │
+│    └──────────┘   └──────────┘   └──────────┘   └──────────────┘    │
 └─────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          RAG PIPELINE                                │
-│                                                                      │
-│  ┌─────────────┐   ┌─────────────┐   ┌─────────────────────────┐    │
-│  │  Embedding  │──▶│  Retrieval  │──▶│  Answer Generation      │    │
-│  │  (OpenRouter)│   │  (Qdrant)   │   │  (LLM via OpenRouter)   │    │
-│  └─────────────┘   └─────────────┘   └─────────────────────────┘    │
-│                                                                      │
+│  ┌─────────┐  ┌─────────┐  ┌─────────────┐  ┌───────────────────┐   │
+│  │Embedding│─>│Retrieval│─>│  Reranking  │─>│ LLM Generation    │   │
+│  │         │  │ (Qdrant)│  │  (Optional) │  │   (OpenRouter)    │   │
+│  └─────────┘  └─────────┘  └─────────────┘  └───────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
                                     │
-                    ┌───────────────┴───────────────┐
-                    ▼                               ▼
-          ┌─────────────────┐             ┌─────────────────┐
-          │  EMBEDDING API  │             │  VECTOR STORE   │
-          │  (OpenRouter)   │             │  (Qdrant)       │
-          │                 │             │                 │
-          │  Converts text  │             │  Stores vectors │
-          │  to vectors     │             │  for fast search│
-          └─────────────────┘             └─────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                       INGESTION PIPELINE                             │
+│  ┌─────────┐  ┌─────────┐  ┌─────────────┐  ┌───────────────────┐   │
+│  │ Loaders │─>│Chunking │─>│  Embedding  │─>│  Vector Storage   │   │
+│  │PDF/TXT/ │  │Recursive│  │             │  │    (Qdrant)       │   │
+│  │HTML/DOCX│  │Sentence │  │             │  │                   │   │
+│  │         │  │Semantic │  │             │  │                   │   │
+│  └─────────┘  └─────────┘  └─────────────┘  └───────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -486,41 +494,53 @@ rag/
 │   ├── api/                    # REST API layer
 │   │   ├── app.py              # FastAPI application factory
 │   │   ├── routes/             # API endpoints
-│   │   │   ├── query.py        # Query endpoint
-│   │   │   ├── ingest.py       # Document ingestion
-│   │   │   └── health.py       # Health check
+│   │   │   ├── query.py        # Query endpoint (DONE)
+│   │   │   ├── ingest.py       # Document ingestion (DONE)
+│   │   │   └── health.py       # Health check (DONE)
 │   │   └── schemas/            # Request/Response models
 │   ├── core/                   # Configuration & utilities
 │   │   ├── config.py           # Settings management
 │   │   └── providers.py        # Shared service instances
 │   ├── rag/                    # RAG pipeline orchestration
 │   │   └── pipeline.py         # Main RAG logic
-│   ├── embeddings/             # Embedding providers
+│   ├── embeddings/             # Embedding providers (DONE)
 │   │   ├── base.py             # Abstract interface
-│   │   └── providers/          # Implementations
-│   ├── vectorstore/            # Vector database layer
+│   │   └── providers/          # OpenRouter implementation
+│   ├── vectorstore/            # Vector database layer (DONE)
 │   │   ├── base.py             # Abstract interface
-│   │   └── providers/          # Implementations
-│   ├── llm/                    # LLM integration
-│   └── ingestion/              # Document processing
-│       ├── document_loader/    # File format handlers
-│       └── chunking/           # Text splitting strategies
+│   │   └── providers/          # Qdrant implementation
+│   ├── llm/                    # LLM integration (DONE)
+│   │   ├── base.py             # Abstract interface
+│   │   └── providers/          # OpenRouter implementation
+│   ├── reranker/               # Reranking module (DONE)
+│   │   ├── base.py             # Abstract interface
+│   │   └── providers/          # LLM-based reranker
+│   ├── evaluation/             # Evaluation metrics (DONE)
+│   │   ├── evaluator.py        # Main evaluator class
+│   │   └── metrics/            # Retrieval, Generation, RAGAS
+│   └── ingestion/              # Document processing (DONE)
+│       ├── document_loader/    # PDF, TXT, HTML, DOCX handlers
+│       ├── chunking/           # Recursive, Sentence, Semantic
+│       └── metadata/           # Extraction & enrichment
 ├── tests/                      # Test suite
 ├── requirements.txt            # Python dependencies
+├── CLAUDE.md                   # Technical documentation
+├── summary.md                  # Project summary
 └── README.md                   # This file
 ```
 
 ---
 
-## Roadmap
+## Implementation Status
 
 - [x] Core API Layer (FastAPI)
 - [x] Embedding Integration (OpenRouter)
 - [x] Vector Store (Qdrant)
-- [x] LLM Integration
-- [x] Document Ingestion Pipeline
-- [ ] Reranking Module
-- [ ] Evaluation Metrics (RAGAS)
+- [x] LLM Integration (OpenRouter)
+- [x] Document Ingestion Pipeline (PDF, TXT, HTML, DOCX)
+- [x] Multiple Chunking Strategies (Recursive, Sentence, Semantic)
+- [x] Reranking Module (LLM-based)
+- [x] Evaluation Metrics (Retrieval + Generation + RAGAS)
 - [ ] Observability & Monitoring
 - [ ] Authentication & Security
 - [ ] Multi-tenancy Support

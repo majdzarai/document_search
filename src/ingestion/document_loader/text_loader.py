@@ -1,11 +1,18 @@
 """
-Text File Loader
-=================
+Text File Loader (Enhanced)
+============================
 
 WHAT IS THIS LOADER?
 --------------------
 This loader handles plain text files (.txt, .text, .md, .markdown).
 Plain text is the simplest format - no parsing needed, just read the file!
+
+ENHANCEMENTS IN THIS VERSION:
+-----------------------------
+1. TEXT NORMALIZATION: Cleans extracted text for better quality
+2. CONTROL CHARACTER REMOVAL: Strips invisible corruption
+3. WHITESPACE NORMALIZATION: Consistent spacing
+4. PARAGRAPH PRESERVATION: Maintains document structure
 
 TEXT FILES ARE SIMPLE:
 ----------------------
@@ -26,23 +33,33 @@ We try UTF-8 first (most common), then fall back to other encodings.
 """
 
 import os
-from typing import List
+from typing import List, Optional
 
 from src.ingestion.document_loader.base import DocumentLoader, LoadedDocument
+from src.ingestion.text_utils import (
+    TextNormalizer,
+    NormalizationConfig,
+    normalize_text
+)
 
 
 class TextLoader(DocumentLoader):
     """
-    Document loader for plain text files.
+    Document loader for plain text files with text normalization.
 
-    This loader reads text files and returns their content.
-    It handles multiple encodings gracefully.
+    This loader reads text files and returns their content,
+    with optional normalization for better RAG quality.
 
     Supported formats:
     - .txt (plain text)
     - .text (alternative extension)
     - .md (markdown)
     - .markdown (markdown)
+
+    Features:
+    - Multi-encoding support (UTF-8, Latin-1, etc.)
+    - Text normalization (whitespace, control chars)
+    - Paragraph boundary preservation
 
     Example:
         loader = TextLoader()
@@ -53,6 +70,34 @@ class TextLoader(DocumentLoader):
     # List of encodings to try, in order of preference
     # UTF-8 is most common, so we try it first
     ENCODINGS_TO_TRY = ["utf-8", "utf-8-sig", "latin-1", "cp1252", "ascii"]
+
+    def __init__(self, normalize: bool = True):
+        """
+        Initialize the text loader.
+
+        Args:
+            normalize: Whether to normalize extracted text (default: True).
+                      Normalization removes control characters, normalizes
+                      whitespace, and preserves paragraph boundaries.
+
+        Example:
+            # With normalization (default)
+            loader = TextLoader()
+
+            # Without normalization
+            loader = TextLoader(normalize=False)
+        """
+        self.normalize = normalize
+        self.normalizer = TextNormalizer(NormalizationConfig(
+            remove_control_chars=True,
+            normalize_whitespace=True,
+            normalize_newlines=True,
+            remove_page_markers=False,  # Not applicable to text files
+            detect_headers_footers=False,  # Risky for text files
+            fix_ocr_artifacts=False,  # Not applicable
+            preserve_paragraphs=True,
+            strip_lines=True
+        ))
 
     @property
     def supported_extensions(self) -> List[str]:
@@ -73,7 +118,8 @@ class TextLoader(DocumentLoader):
         This method:
         1. Checks if the file exists
         2. Tries different encodings to read the file
-        3. Returns the text with metadata
+        3. Normalizes the text (if enabled)
+        4. Returns the text with metadata
 
         Args:
             file_path: Path to the text file.
@@ -132,7 +178,17 @@ class TextLoader(DocumentLoader):
             )
 
         # =====================================================================
-        # Step 4: Build metadata
+        # Step 4: Normalize the text
+        # =====================================================================
+        original_char_count = len(text)
+        original_line_count = text.count("\n") + 1
+
+        if self.normalize:
+            text = self.normalizer.normalize(text)
+            print(f"[TextLoader] Normalized text ({original_char_count} → {len(text)} chars)")
+
+        # =====================================================================
+        # Step 5: Build metadata
         # =====================================================================
         metadata = {
             "source": file_name,
@@ -141,12 +197,15 @@ class TextLoader(DocumentLoader):
             "file_size_bytes": file_size,
             "encoding": used_encoding,
             "char_count": len(text),
-            "line_count": text.count("\n") + 1
+            "original_char_count": original_char_count,
+            "line_count": text.count("\n") + 1,
+            "original_line_count": original_line_count,
+            "normalized": self.normalize
         }
 
         print(f"[TextLoader] Extracted {len(text)} characters, {metadata['line_count']} lines")
 
         # =====================================================================
-        # Step 5: Return the loaded document
+        # Step 6: Return the loaded document
         # =====================================================================
         return LoadedDocument(text=text, metadata=metadata)
