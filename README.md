@@ -566,7 +566,7 @@ rag/
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+- see the [LICENSE](LICENSE) file for details.
 
 ---
 
@@ -574,9 +574,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
   <img src="https://user-images.githubusercontent.com/74038190/212284158-e840e285-664b-44d7-b79b-e264b5e54825.gif" width="400" alt="Footer Animation"/>
 </p>
 
-<p align="center">
-  <strong>Built with AI</strong>
-</p>
+
 
 <p align="center">
   <sub>Transform your documents into intelligent APIs</sub>
