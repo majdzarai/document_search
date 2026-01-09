@@ -21,13 +21,16 @@ YOUR APP  ──HTTP──>  RAG ENGINE API  ──HTTP──>  OpenRouter (LLM/
 | Component | Status | What It Does |
 |-----------|--------|--------------|
 | **API Layer** | DONE | FastAPI endpoints for query, ingest, health |
-| **Embeddings** | DONE | OpenRouter provider converts text to vectors |
-| **Vector Store** | DONE | Qdrant stores and searches document vectors |
-| **LLM** | DONE | OpenRouter generates answers from context |
+| **Embeddings** | DONE | OpenRouter + 4 alternative providers |
+| **Vector Store** | DONE | Qdrant + 3 alternative providers |
+| **LLM** | DONE | OpenRouter + 4 alternative providers |
 | **Ingestion** | DONE | Loads PDF/TXT/HTML/DOCX, chunks, stores |
-| **Reranking** | DONE | LLM-based re-scoring for better relevance |
-| **Evaluation** | PARTIAL | Metrics structure exists |
+| **Reranking** | DONE | LLM-based + 3 alternative rerankers |
+| **Evaluation** | DONE | Retrieval metrics, generation metrics, RAGAS integration |
+| **Query Understanding** | DONE | Query analysis, expansion, intent classification |
+| **Generation Enhancement** | DONE | Prompt building, context building, citations, streaming |
 | **Security** | STRUCTURE | API key/RBAC structure exists |
+| **Observability** | STRUCTURE | Logging/tracing/metrics structure exists |
 
 ## How It Works
 
@@ -78,15 +81,16 @@ curl -X POST http://localhost:8000/api/v1/query \
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                       RAG PIPELINE                           │
-│    Embed → Search → Rerank (optional) → Generate Answer     │
+│  Embed → Search → Rerank (opt) → Generate → Evaluate (opt) │
 └─────────────────────────────────────────────────────────────┘
                               │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│   EMBEDDINGS    │  │  VECTOR STORE   │  │      LLM        │
-│  (OpenRouter)   │  │    (Qdrant)     │  │  (OpenRouter)   │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
+      ┌───────────────┬───────┼───────┬───────────────┐
+      ▼               ▼       ▼       ▼               ▼
+┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────────┐
+│ EMBEDDINGS│  │VECTOR STORE│  │    LLM   │  │  EVALUATION   │
+│(OpenRouter│  │  (Qdrant)  │  │(OpenRouter│  │  (Metrics)    │
+│ +4 others)│  │ +3 others) │  │ +4 others)│  │               │
+└───────────┘  └───────────┘  └───────────┘  └───────────────┘
 ```
 
 ## Key Configuration
@@ -107,6 +111,11 @@ RERANKER_TOP_K=5
 # Optional - Production (Qdrant Cloud)
 QDRANT_URL=https://your-cluster.cloud.qdrant.io
 QDRANT_API_KEY=your-key
+
+# Optional - Evaluation
+ENABLE_EVALUATION=true
+EVALUATION_DEFAULT_K=5
+ENABLE_RAGAS=false
 ```
 
 ## Key Files
@@ -118,6 +127,7 @@ QDRANT_API_KEY=your-key
 | `src/api/routes/ingest.py` | Ingestion endpoint |
 | `src/rag/pipeline.py` | Main RAG orchestrator |
 | `src/ingestion/service.py` | Document processing |
+| `src/evaluation/evaluator.py` | RAG quality metrics |
 | `src/core/providers.py` | Shared provider instances |
 | `src/core/config.py` | Configuration management |
 

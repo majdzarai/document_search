@@ -29,15 +29,17 @@ This is a **production-grade RAG (Retrieval-Augmented Generation) Engine** built
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| API Layer | DONE | FastAPI with query, ingest, and health endpoints |
-| Embeddings | DONE | OpenRouter provider with abstraction layer |
-| Vector Store | DONE | Qdrant provider with in-memory/cloud modes |
-| LLM Integration | DONE | OpenRouter LLM provider for answer generation |
-| Ingestion Pipeline | DONE | PDF, TXT, HTML, DOCX loaders + chunking strategies |
-| Reranking | DONE | Simple LLM-based reranker |
+| API Layer | DONE | FastAPI with query, ingest, health endpoints + middleware |
+| Embeddings | DONE | OpenRouter (primary) + OpenAI, Cohere, HuggingFace, SentenceTransformers |
+| Vector Store | DONE | Qdrant (primary) + Pinecone, pgvector, Weaviate |
+| LLM Integration | DONE | OpenRouter (primary) + OpenAI, Anthropic, Ollama, vLLM |
+| Ingestion Pipeline | DONE | PDF, TXT, HTML, DOCX loaders + 3 chunking strategies |
+| Reranking | DONE | LLM-based (primary) + Cohere, CrossEncoder, BGE |
 | Evaluation | DONE | Retrieval metrics, generation metrics, RAGAS integration |
-| Observability | STRUCTURE | Logging/tracing structure exists |
-| Security | STRUCTURE | API key/RBAC structure exists |
+| Query Understanding | DONE | Query analysis, expansion, intent classification |
+| Generation Enhancement | DONE | Prompt building, context building, citations, streaming |
+| Observability | STRUCTURE | Logging/tracing/metrics structure exists |
+| Security | STRUCTURE | API key/RBAC/multi-tenant structure exists |
 
 ---
 
@@ -452,14 +454,22 @@ Health check endpoint.
 **Purpose:** Convert text into numerical vectors (embeddings)
 
 **How it works:**
-- Text → OpenRouter API → 1536-dimensional vector
+- Text → Embedding API → 1536-dimensional vector
 - Similar meanings = similar vectors
 - Used for both ingestion and queries
+
+**Available Providers:**
+| Provider | File | Description |
+|----------|------|-------------|
+| OpenRouter | `openrouter.py` | Primary - routes to various models |
+| OpenAI | `openai.py` | Direct OpenAI API access |
+| Cohere | `cohere.py` | Cohere embedding models |
+| HuggingFace | `huggingface.py` | HuggingFace inference API |
+| SentenceTransformers | `sentence_transformers.py` | Local embedding models |
 
 **Key Files:**
 - `base.py`: Abstract interface (`EmbeddingProvider`)
 - `factory.py`: Creates provider instances
-- `providers/openrouter.py`: OpenRouter implementation
 
 ### 2. Vector Store Layer (`src/vectorstore/`)
 
@@ -468,12 +478,19 @@ Health check endpoint.
 **How it works:**
 - Documents stored with: vector + text + metadata
 - Cosine similarity finds similar documents
-- Qdrant handles the heavy lifting
+- Multiple backend options available
+
+**Available Providers:**
+| Provider | File | Description |
+|----------|------|-------------|
+| Qdrant | `qdrant.py` | Primary - in-memory, local, or cloud |
+| Pinecone | `pinecone.py` | Managed vector database |
+| pgvector | `pgvector.py` | PostgreSQL extension |
+| Weaviate | `weaviate.py` | Open-source vector DB |
 
 **Key Files:**
 - `base.py`: Abstract interface (`VectorStoreProvider`)
 - `factory.py`: Creates provider instances
-- `providers/qdrant.py`: Qdrant implementation
 
 **Qdrant Modes:**
 - **In-memory** (default): No persistence, good for testing
@@ -486,13 +503,21 @@ Health check endpoint.
 
 **How it works:**
 - Takes context (retrieved docs) + question
-- Sends to OpenRouter API
+- Sends to LLM API
 - Returns generated answer
+
+**Available Providers:**
+| Provider | File | Description |
+|----------|------|-------------|
+| OpenRouter | `openrouter.py` | Primary - routes to 100+ models |
+| OpenAI | `openai.py` | Direct OpenAI API (GPT-4, etc.) |
+| Anthropic | `anthropic.py` | Claude models |
+| Ollama | `ollama.py` | Local LLM serving |
+| vLLM | `vllm.py` | High-performance local serving |
 
 **Key Files:**
 - `base.py`: Abstract interface (`LLMProvider`)
 - `factory.py`: Creates provider instances
-- `providers/openrouter.py`: OpenRouter implementation
 
 ### 4. Ingestion Pipeline (`src/ingestion/`)
 
@@ -519,18 +544,25 @@ Health check endpoint.
 - Reranker compares query + document together
 - Catches nuances that vector search misses
 
-**Current Implementation:**
-- LLM-based reranker (uses OpenRouter)
-- Asks LLM to score document relevance 0-10
-- More accurate than pure vector similarity
+**Available Providers:**
+| Provider | File | Description |
+|----------|------|-------------|
+| Simple (LLM) | `simple.py` | Primary - uses LLM for scoring |
+| Cohere | `cohere.py` | Cohere rerank API |
+| CrossEncoder | `cross_encoder.py` | Cross-encoder models |
+| BGE Reranker | `bge_reranker.py` | BAAI BGE reranker |
 
-### 6. RAG Pipeline (`src/rag/pipeline.py`)
+**Key Files:**
+- `base.py`: Abstract interface (`RerankerProvider`)
+- `factory.py`: Creates provider instances
+
+### 6. RAG Pipeline (`src/rag/`)
 
 **Purpose:** Orchestrates the entire RAG flow
 
-**Flow:**
+**Main Orchestrator** (`pipeline.py`):
 1. Initialize providers (embedding, vector store, LLM, reranker)
-2. On query: embed → search → rerank → generate
+2. On query: embed → search → rerank → generate → evaluate
 3. Return answer with sources
 
 **Key Methods:**
@@ -539,6 +571,25 @@ Health check endpoint.
 - `_retrieve_documents()`: Search vector store
 - `_rerank_documents()`: Apply reranking
 - `_generate_answer()`: Call LLM
+
+**Sub-modules:**
+
+**Query Understanding** (`query_understanding/`):
+- `analyzer.py`: Analyzes query structure and complexity
+- `expander.py`: Expands queries for better retrieval
+- `intent_classifier.py`: Classifies user intent
+
+**Retrieval Enhancement** (`retrieval/`):
+- `retriever.py`: Main retrieval logic
+- `hybrid_retriever.py`: Combines vector + keyword search
+- `metadata_filter.py`: Filters by document metadata
+
+**Generation Enhancement** (`generation/`):
+- `generator.py`: Main answer generation
+- `prompt_builder.py`: Constructs optimized prompts
+- `context_builder.py`: Formats context for LLM
+- `citation_handler.py`: Extracts and formats citations
+- `streaming.py`: Streaming response support
 
 ### 7. Shared Providers (`src/core/providers.py`)
 
@@ -705,6 +756,11 @@ rag/
 │   ├── api/                      # REST API layer
 │   │   ├── app.py                # FastAPI app factory
 │   │   ├── dependencies.py       # Dependency injection
+│   │   ├── middleware/           # API middleware (IMPLEMENTED)
+│   │   │   ├── authentication.py # Auth middleware
+│   │   │   ├── error_handler.py  # Error handling
+│   │   │   ├── rate_limiter.py   # Rate limiting
+│   │   │   └── request_logging.py # Request logging
 │   │   ├── routes/               # API endpoints
 │   │   │   ├── query.py          # POST /query (IMPLEMENTED)
 │   │   │   ├── ingest.py         # POST /ingest (IMPLEMENTED)
@@ -716,37 +772,69 @@ rag/
 │   │
 │   ├── core/                     # Core utilities
 │   │   ├── config.py             # Settings from env vars
-│   │   └── providers.py          # Shared provider instances
+│   │   ├── providers.py          # Shared provider instances
+│   │   ├── constants.py          # Application constants
+│   │   ├── exceptions.py         # Custom exceptions
+│   │   └── secrets.py            # Secrets management
 │   │
-│   ├── rag/                      # RAG pipeline
-│   │   └── pipeline.py           # Main orchestrator
+│   ├── rag/                      # RAG pipeline (IMPLEMENTED)
+│   │   ├── pipeline.py           # Main orchestrator
+│   │   ├── generation/           # Answer generation
+│   │   │   ├── generator.py      # Main generator
+│   │   │   ├── prompt_builder.py # Prompt construction
+│   │   │   ├── context_builder.py # Context formatting
+│   │   │   ├── citation_handler.py # Citation extraction
+│   │   │   └── streaming.py      # Streaming responses
+│   │   ├── retrieval/            # Document retrieval
+│   │   │   ├── retriever.py      # Main retriever
+│   │   │   ├── hybrid_retriever.py # Hybrid search
+│   │   │   └── metadata_filter.py # Metadata filtering
+│   │   └── query_understanding/  # Query processing
+│   │       ├── analyzer.py       # Query analysis
+│   │       ├── expander.py       # Query expansion
+│   │       └── intent_classifier.py # Intent detection
 │   │
 │   ├── embeddings/               # Embedding layer (IMPLEMENTED)
 │   │   ├── base.py               # EmbeddingProvider interface
 │   │   ├── factory.py            # Provider factory
 │   │   └── providers/
-│   │       └── openrouter.py     # OpenRouter implementation
+│   │       ├── openrouter.py     # OpenRouter (primary)
+│   │       ├── openai.py         # OpenAI direct
+│   │       ├── cohere.py         # Cohere embeddings
+│   │       ├── huggingface.py    # HuggingFace models
+│   │       └── sentence_transformers.py # Local models
 │   │
 │   ├── vectorstore/              # Vector store layer (IMPLEMENTED)
 │   │   ├── base.py               # VectorStoreProvider interface
 │   │   ├── factory.py            # Provider factory
 │   │   └── providers/
-│   │       └── qdrant.py         # Qdrant implementation
+│   │       ├── qdrant.py         # Qdrant (primary)
+│   │       ├── pinecone.py       # Pinecone
+│   │       ├── pgvector.py       # PostgreSQL + pgvector
+│   │       └── weaviate.py       # Weaviate
 │   │
 │   ├── llm/                      # LLM layer (IMPLEMENTED)
 │   │   ├── base.py               # LLMProvider interface
 │   │   ├── factory.py            # Provider factory
 │   │   └── providers/
-│   │       └── openrouter.py     # OpenRouter implementation
+│   │       ├── openrouter.py     # OpenRouter (primary)
+│   │       ├── openai.py         # OpenAI direct
+│   │       ├── anthropic.py      # Anthropic Claude
+│   │       ├── ollama.py         # Ollama local
+│   │       └── vllm.py           # vLLM serving
 │   │
 │   ├── reranker/                 # Reranking layer (IMPLEMENTED)
 │   │   ├── base.py               # RerankerProvider interface
 │   │   ├── factory.py            # Provider factory
 │   │   └── providers/
-│   │       └── simple.py         # LLM-based reranker
+│   │       ├── simple.py         # LLM-based (primary)
+│   │       ├── cohere.py         # Cohere reranker
+│   │       ├── cross_encoder.py  # Cross-encoder models
+│   │       └── bge_reranker.py   # BGE reranker
 │   │
 │   ├── ingestion/                # Document ingestion (IMPLEMENTED)
 │   │   ├── service.py            # Main IngestionService
+│   │   ├── text_utils.py         # Text processing utilities
 │   │   ├── document_loader/      # File format handlers
 │   │   │   ├── base.py           # DocumentLoader interface
 │   │   │   ├── pdf_loader.py     # PDF support
@@ -772,7 +860,15 @@ rag/
 │   │       └── ragas_adapter.py  # Optional RAGAS integration
 │   │
 │   ├── observability/            # Monitoring (STRUCTURE)
+│   │   ├── logging.py            # Logging configuration
+│   │   ├── tracing.py            # Distributed tracing
+│   │   ├── metrics.py            # Metrics collection
+│   │   └── spans.py              # Span management
+│   │
 │   └── security/                 # Security (STRUCTURE)
+│       ├── api_key.py            # API key validation
+│       ├── rbac.py               # Role-based access control
+│       └── tenant.py             # Multi-tenant support
 │
 ├── tests/                        # Test suite
 ├── requirements.txt              # Python dependencies
