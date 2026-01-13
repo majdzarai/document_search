@@ -77,3 +77,90 @@ class ErrorResponse(BaseModel):
         default="INTERNAL_ERROR",
         description="Machine-readable error code for programmatic handling"
     )
+
+
+class CreateCollectionResponse(BaseModel):
+    """
+    Schema for collection creation response.
+
+    Example:
+        {
+            "success": true,
+            "message": "Collection created successfully",
+            "collection_name": "rag_client123",
+            "collection_id": "client123"
+        }
+    """
+
+    success: bool = Field(
+        ...,
+        description="Whether the collection was created successfully"
+    )
+
+    message: str = Field(
+        ...,
+        description="Human-readable status message"
+    )
+
+    collection_name: str = Field(
+        ...,
+        description="Full name of the created collection in Qdrant"
+    )
+
+    collection_id: str = Field(
+        ...,
+        description="The collection ID provided by the client"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "success": True,
+                    "message": "Collection created successfully",
+                    "collection_name": "rag_client123",
+                    "collection_id": "client123"
+                }
+            ]
+        }
+    }
+
+
+class DeleteCollectionResponse(BaseModel):
+    """
+    Schema for collection deletion response.
+
+    Example:
+        {
+            "success": true,
+            "message": "Collection deleted successfully",
+            "collection_id": "client123"
+        }
+    """
+
+    success: bool = Field(
+        ...,
+        description="Whether the collection was deleted successfully"
+    )
+
+    message: str = Field(
+        ...,
+        description="Human-readable status message"
+    )
+
+    collection_id: str = Field(
+        ...,
+        description="The ID of the deleted collection"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "success": True,
+                    "message": "Collection deleted successfully",
+                    "collection_id": "client123"
+                }
+            ]
+        }
+    }

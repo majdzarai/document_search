@@ -419,3 +419,37 @@ class VectorStoreProvider(ABC):
             print(f"Vectors stored: {info['total_vectors']}")
         """
         pass
+
+    def delete_collection(self) -> bool:
+        """
+        Delete the entire collection from the vector database.
+
+        WARNING: This permanently deletes ALL data in the collection.
+        This action cannot be undone.
+
+        WHY DELETE COLLECTION?
+        ----------------------
+        Useful for:
+        - Multi-tenant cleanup: Removing a tenant's entire collection
+        - Test cleanup: Deleting test data after tests
+        - User data deletion: GDPR/compliance requests
+        - Collection reset: Starting fresh with a new collection
+
+        WHEN TO OVERRIDE:
+        -----------------
+        Implement this method if your vector store supports collection deletion.
+        Default implementation returns False (not supported).
+
+        Returns:
+            True if deletion was successful (or collection didn't exist).
+            False if deletion is not supported or an error occurred.
+
+        EXAMPLE:
+        --------
+            # Delete the entire collection
+            success = provider.delete_collection()
+
+            if success:
+                print("Collection deleted successfully!")
+        """
+        pass

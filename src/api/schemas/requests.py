@@ -62,3 +62,37 @@ class QueryRequest(BaseModel):
             ]
         }
     }
+
+
+class CreateCollectionRequest(BaseModel):
+    """
+    Schema for creating a new multi-tenant collection.
+
+    This model defines the request body for creating a new isolated
+    collection for a specific tenant.
+
+    Example:
+        POST /api/v1/collections/create
+        {
+            "collection_id": "client123"
+        }
+    """
+
+    collection_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Unique identifier for the collection (tenant ID)",
+        pattern="^[a-zA-Z0-9_-]+$",  # Alphanumeric, underscore, hyphen only
+        examples=["client123", "tenant_a", "my-company"]
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "collection_id": "client123"
+                }
+            ]
+        }
+    }

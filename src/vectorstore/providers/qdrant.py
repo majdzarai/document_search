@@ -701,3 +701,44 @@ class QdrantVectorStore(VectorStoreProvider):
                 "status": f"error: {e}",
                 "total_vectors": 0
             }
+
+    def delete_collection(self) -> bool:
+        """
+        Delete the entire collection from Qdrant.
+
+        WARNING: This permanently deletes ALL data in the collection.
+        This action cannot be undone.
+
+        WHEN TO USE:
+        -------------
+        - Deleting a tenant's entire collection
+        - Cleaning up test data
+        - User requests data deletion (GDPR, etc.)
+
+        Returns:
+            True if deletion was successful (or collection didn't exist).
+            False if an error occurred during deletion.
+
+        IDEMPOTENT:
+        -----------
+        If the collection doesn't exist, returns True (no error).
+        """
+        try:
+            # Check if collection exists
+            existing_collections = self._client.get_collections().collections
+            existing_names = [col.name for col in existing_collections]
+
+            if self._collection_name not in existing_names:
+                print(f"[QdrantVectorStore] Collection '{self._collection_name}' does not exist (idempotent)")
+                return True
+
+            # Delete the collection
+            print(f"[QdrantVectorStore] Deleting collection '{self._collection_name}'...")
+            self._client.delete_collection(collection_name=self._collection_name)
+            print(f"[QdrantVectorStore] Collection deleted successfully")
+
+            return True
+
+        except Exception as e:
+            print(f"[QdrantVectorStore] ERROR during collection deletion: {e}")
+            return False

@@ -40,6 +40,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Each router handles a specific set of endpoints.
 from src.api.routes import query
 from src.api.routes import ingest
+from src.api.routes import collections
 
 # Import the shared provider initialization
 # This ensures all services use the same vector store instance
@@ -216,6 +217,9 @@ def create_app() -> FastAPI:
 
     # Include the ingest router (POST /ingest) - STEP 5
     app.include_router(ingest.router)
+
+    # Include the collections router (multi-tenant collection management)
+    app.include_router(collections.router)
 
     # =========================================================================
     # STEP 4: Add Root Endpoint
